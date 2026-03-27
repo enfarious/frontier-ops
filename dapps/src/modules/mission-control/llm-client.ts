@@ -35,8 +35,10 @@ export interface ToolDefinition {
 
 const CONFIG_KEY = "frontier-ops-llm-config";
 
+// Use the Vite proxy path in dev, but a real endpoint in production.
+// Users should configure their endpoint in Mission Control settings.
 const DEFAULT_CONFIG: LLMConfig = {
-  endpoint: "/llm-proxy/v1",
+  endpoint: import.meta.env.DEV ? "/llm-proxy/v1" : "http://localhost:11434/v1",
   model: "qwen/qwen3.5-9b",
   apiKey: "",
   maxTokens: 2048,

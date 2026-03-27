@@ -67,11 +67,14 @@ export default function MissionControlPage() {
   const [messages, setMessages] = useState<DisplayMessage[]>(loadPersistedMessages);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const [config, setConfig] = useState<LLMConfig>(loadLLMConfig);
   const [connectionStatus, setConnectionStatus] = useState<"unknown" | "ok" | "error">("unknown");
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [modelDetails, setModelDetails] = useState<ModelInfo[]>([]);
+
+  // Auto-open settings if no LLM has been configured yet
+  const hasUserConfig = !!localStorage.getItem("frontier-ops-llm-config");
+  const [showSettings, setShowSettings] = useState(!hasUserConfig);
 
   // Chat history for the LLM (not display messages)
   const chatHistory = useRef<ChatMessage[]>(loadPersistedHistory());
