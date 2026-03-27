@@ -1,0 +1,6 @@
+[package]
+name = "bounty_escrow"
+edition = "2024"
+
+[addresses]
+bounty_escrow = "0x0"

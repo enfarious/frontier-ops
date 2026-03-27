@@ -1,0 +1,29 @@
+# Node modules
+*/node_modules
+node_modules/
+
+# Environment variables
+.keys/
+.env
+.env.testnet
+
+# generated keys
+docker/.env.sui
+docker/world-contracts/
+.DS_Store
+
+deployments/*
+test-resources.json
+
+dapps/frontend
+dapps/dist/
+.DS_Store
+
+.pnpm-store/
+move-contracts/**/build/**/
+
+# Tauri build artifacts
+dapps/src-tauri/target/
+
+# Claude local config
+.claude/
