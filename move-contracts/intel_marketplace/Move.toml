@@ -1,0 +1,6 @@
+[package]
+name = "intel_marketplace"
+edition = "2024"
+
+[addresses]
+intel_marketplace = "0x0"

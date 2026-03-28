@@ -27,7 +27,7 @@ const LANDING_DISMISSED_KEY = "frontier-ops-landing-dismissed";
 
 function App() {
   const [activeModuleId, setActiveModuleId] = useState<string | null>(
-    "turret-control",
+    "mission-control",
   );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showLanding, setShowLanding] = useState(

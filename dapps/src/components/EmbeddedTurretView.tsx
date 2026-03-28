@@ -15,6 +15,9 @@ import { buildSubmitClaimTx, buildCreateBountyTx } from "../core/bounty-escrow-a
 import { searchCharactersByName, type CharacterSearchResult } from "../core/character-search";
 import { getItemTypeMap, type ItemType } from "../core/world-api";
 import { fetchSSUInventory } from "../core/inventory-data";
+import { fetchOnChainListings, invalidateListingCache, type OnChainListing } from "../core/intel-market-queries";
+import { buildPurchaseListingTx } from "../core/intel-market-actions";
+import { getCharacterMap } from "../modules/danger-alerts/hooks/useKillmails";
 
 
 interface DirectAssembly {
@@ -379,6 +382,9 @@ export function EmbeddedTurretView() {
 
       {/* Bounty Board — global, shows on all assembly types */}
       <EmbeddedBountyBoard />
+
+      {/* Intel Marketplace — shows listed intel packages for sale */}
+      <EmbeddedIntelMarketplace />
 
       {/* Gate-specific */}
       {isGate && (
@@ -1863,6 +1869,233 @@ export function AuthorizeExtensionButton({
          "Authorize Access Control Extension"}
       </Button>
       {errorMsg && <Text size="1" color="red">{errorMsg}</Text>}
+    </Flex>
+  );
+}
+
+// ─── Intel Marketplace (on-chain) ───────────────────────────────────
+
+/** Resolve a wallet address to an in-game character name */
+async function resolveSellerName(address: string): Promise<string | null> {
+  try {
+    const charMap = await getCharacterMap();
+    for (const [, info] of charMap) {
+      if (info.address === address) return info.name;
+    }
+  } catch {}
+  return null;
+}
+
+function EmbeddedIntelMarketplace() {
+  const [open, setOpen] = useState(false);
+  const [listings, setListings] = useState<OnChainListing[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [buying, setBuying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [sellerNames, setSellerNames] = useState<Map<string, string>>(new Map());
+  const [revealedId, setRevealedId] = useState<string | null>(null);
+  const account = useCurrentAccount();
+  const dAppKit = useDAppKit();
+
+  const loadListings = useCallback(async () => {
+    setLoading(true);
+    invalidateListingCache();
+    const all = await fetchOnChainListings();
+    const visible = all.filter((l) => l.status === 0 || l.status === 1);
+    setListings(visible);
+    setLoading(false);
+
+    // Resolve seller names in background
+    const names = new Map<string, string>();
+    const uniqueSellers = new Set(visible.map((l) => l.seller));
+    for (const addr of uniqueSellers) {
+      const name = await resolveSellerName(addr);
+      if (name) names.set(addr, name);
+    }
+    if (names.size > 0) setSellerNames(names);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    loadListings();
+  }, [open, loadListings]);
+
+  const handleBuy = async (listing: OnChainListing) => {
+    if (!account?.address) return;
+    setBuying(true);
+    setError(null);
+    try {
+      const tx = buildPurchaseListingTx(listing.objectId, BigInt(listing.priceMist));
+      await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      // Wait for indexer then refresh
+      setTimeout(() => loadListings(), 3000);
+    } catch (e: any) {
+      setError(e?.message || "Purchase failed");
+    } finally {
+      setBuying(false);
+    }
+  };
+
+  const listedCount = listings.filter((l) => l.status === 0).length;
+
+  return (
+    <Flex direction="column" gap="2">
+      <Flex
+        justify="between"
+        align="center"
+        onClick={() => setOpen(!open)}
+        style={{ cursor: "pointer" }}
+      >
+        <Flex align="center" gap="2">
+          <Text size="2" weight="medium">Intel Marketplace</Text>
+          {listedCount > 0 && <Badge size="1" color="purple">{listedCount}</Badge>}
+        </Flex>
+        <Text size="1" color="gray">{open ? "▲" : "▼"}</Text>
+      </Flex>
+
+      {open && (
+        <Flex direction="column" gap="2" pl="2">
+          {loading ? (
+            <Text size="1" color="gray">Loading from chain...</Text>
+          ) : listings.length === 0 ? (
+            <Flex direction="column" gap="1">
+              <Text size="1" color="gray">No intel packages on-chain.</Text>
+              <Button size="1" variant="ghost" onClick={loadListings}>Refresh</Button>
+            </Flex>
+          ) : (
+            <>
+              {listings.map((listing) => {
+                const isSold = listing.status === 1;
+                const isBuyer = account?.address === listing.buyer;
+                const isRevealed = revealedId === listing.objectId;
+
+                // Parse payload for inline display
+                let payloadData: any = null;
+                if (isRevealed && listing.payload) {
+                  try { payloadData = JSON.parse(listing.payload); } catch {}
+                }
+
+                return (
+                  <Flex key={listing.objectId} direction="column" gap="1" p="2" style={{
+                    background: isSold ? "var(--green-2)" : "var(--gray-2)",
+                    borderRadius: 6,
+                    border: `1px solid ${isSold ? "var(--green-6)" : "var(--gray-4)"}`,
+                  }}>
+                    <Flex gap="2" align="center" wrap="wrap">
+                      <Badge size="1" color="yellow">{listing.priceSui} SUI</Badge>
+                      <Badge size="1" variant="outline" color={
+                        listing.visibility === 0 ? "green" :
+                        listing.visibility === 1 ? "blue" : "orange"
+                      }>
+                        {listing.visibility === 0 ? "Global" :
+                         listing.visibility === 1 ? `Tribe: ${listing.sellerTribe || "?"}` : "Local"}
+                      </Badge>
+                      {isSold && <Badge size="1" variant="solid" color="green">SOLD</Badge>}
+                    </Flex>
+                    <Text size="2" weight="bold">{listing.title}</Text>
+                    {listing.description && (
+                      <Text size="1" color="gray">
+                        {listing.description.length > 120 ? listing.description.slice(0, 120) + "..." : listing.description}
+                      </Text>
+                    )}
+                    <Text size="1" color="gray">
+                      Seller: {sellerNames.get(listing.seller) ?? listing.seller.slice(0, 8) + "..." + listing.seller.slice(-4)}
+                    </Text>
+
+                    {/* Buy button */}
+                    {!isSold && account?.address && (
+                      <Button
+                        size="1"
+                        variant="solid"
+                        color="purple"
+                        disabled={buying}
+                        onClick={() => handleBuy(listing)}
+                        style={{ alignSelf: "flex-start", marginTop: 4 }}
+                      >
+                        {buying ? "Signing..." : `Buy for ${listing.priceSui} SUI`}
+                      </Button>
+                    )}
+
+                    {/* Reveal Dead Drop inline for buyer */}
+                    {isSold && isBuyer && listing.payload && !isRevealed && (
+                      <Button
+                        size="1"
+                        variant="solid"
+                        color="green"
+                        onClick={() => setRevealedId(listing.objectId)}
+                        style={{ alignSelf: "flex-start", marginTop: 4 }}
+                      >
+                        Reveal Dead Drop
+                      </Button>
+                    )}
+
+                    {/* Inline Dead Drop display */}
+                    {isRevealed && payloadData && (
+                      <Flex direction="column" gap="1" mt="1" p="2" style={{
+                        background: "var(--gray-3)",
+                        borderRadius: 4,
+                        border: "1px solid var(--green-6)",
+                      }}>
+                        <Text size="1" weight="bold" color="green">DEAD DROP INTEL</Text>
+                        {payloadData.contents?.sightings?.map((s: any, i: number) => (
+                          <Text key={i} size="1">
+                            <Badge size="1" variant="outline" color="orange" mr="1">
+                              {(s.assetType ?? "unknown").toUpperCase()}
+                            </Badge>
+                            {s.solarSystemName ?? "Unknown system"}
+                            {s.planet ? ` P${s.planet}` : ""}
+                            {s.lpoint ? ` L${s.lpoint}` : ""}
+                            {s.ownerName ? ` — ${s.ownerName}` : ""}
+                            {s.ownerTribe ? ` (${s.ownerTribe})` : ""}
+                            {s.status ? ` [${s.status}]` : ""}
+                          </Text>
+                        ))}
+                        {payloadData.contents?.fieldReports?.map((r: any, i: number) => (
+                          <Text key={`r${i}`} size="1">
+                            <Badge size="1" variant="outline" color="blue" mr="1">Report</Badge>
+                            {r.title}
+                            {r.solarSystemName ? ` — ${r.solarSystemName}` : ""}
+                          </Text>
+                        ))}
+                        {payloadData.contents?.watchTargets?.map((w: any, i: number) => (
+                          <Text key={`w${i}`} size="1">
+                            <Badge size="1" variant="outline" color="purple" mr="1">
+                              {w.targetType === "player" ? "Player" : "Tribe"}
+                            </Badge>
+                            {w.targetName}
+                            {w.notes ? ` — ${w.notes}` : ""}
+                          </Text>
+                        ))}
+                        {payloadData.contents?.sightings?.length === 0 && payloadData.contents?.fieldReports?.length === 0 && (
+                          <Text size="1" color="gray">Empty payload</Text>
+                        )}
+                        <Button
+                          size="1"
+                          variant="ghost"
+                          onClick={() => setRevealedId(null)}
+                          style={{ alignSelf: "flex-start" }}
+                        >
+                          Hide
+                        </Button>
+                      </Flex>
+                    )}
+
+                    {isSold && isBuyer && !listing.payload && (
+                      <Text size="1" color="gray">No payload data on this listing</Text>
+                    )}
+
+                    {!isSold && !account && (
+                      <Text size="1" color="gray">Connect wallet to purchase</Text>
+                    )}
+                  </Flex>
+                );
+              })}
+              {error && <Text size="1" color="red">{error}</Text>}
+              <Button size="1" variant="ghost" onClick={loadListings}>Refresh</Button>
+            </>
+          )}
+        </Flex>
+      )}
     </Flex>
   );
 }

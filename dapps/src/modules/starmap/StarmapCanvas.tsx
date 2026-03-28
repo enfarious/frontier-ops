@@ -9,6 +9,9 @@ import * as THREE from "three";
 import type { SolarSystem } from "../../core/world-api";
 import type { JumpRoute } from "./hooks/useGateLinks";
 import type { NormalizedCoord } from "./helpers/projection";
+import type { KillmailData } from "../danger-alerts/danger-types";
+import { useHeatmapData } from "./hooks/useHeatmapData";
+import { HeatmapBlobs } from "./HeatmapBlobs";
 
 export interface StarmapCanvasHandle {
   navigateTo: (nx: number, nz: number, targetZoom: number) => void;
@@ -23,6 +26,10 @@ interface StarmapCanvasProps {
   onSelectSystem: (id: number | null, pos?: { x: number; y: number }) => void;
   onHoverSystem: (id: number | null) => void;
   onReady?: () => void;
+  killmails?: KillmailData[];
+  heatmapCurrentTime?: number;
+  heatmapWindowDuration?: number;
+  heatmapEnabled?: boolean;
 }
 
 /** Normalize 3D coords to a centered unit cube */
@@ -398,6 +405,22 @@ function TravelLines({
   );
 }
 
+/** Heatmap blob layer — must be inside R3F Canvas context */
+function HeatmapLayer({
+  killmails,
+  positions,
+  currentTime,
+  windowDuration,
+}: {
+  killmails: KillmailData[];
+  positions: Map<number, THREE.Vector3>;
+  currentTime: number;
+  windowDuration: number;
+}) {
+  const blobs = useHeatmapData(killmails, positions, currentTime, windowDuration);
+  return <HeatmapBlobs blobs={blobs} />;
+}
+
 function CameraController({ onReady }: { onReady?: () => void }) {
   const { camera } = useThree();
   const readyFired = useRef(false);
@@ -425,6 +448,10 @@ export const StarmapCanvas = forwardRef<StarmapCanvasHandle, StarmapCanvasProps>
     onSelectSystem,
     onHoverSystem,
     onReady,
+    killmails,
+    heatmapCurrentTime,
+    heatmapWindowDuration,
+    heatmapEnabled = true,
   }, ref) {
     const positions = useMemo(() => normalizePositions(systems), [systems]);
 
@@ -469,6 +496,15 @@ export const StarmapCanvas = forwardRef<StarmapCanvasHandle, StarmapCanvasProps>
             minDistance={5}
             maxDistance={2000}
           />
+
+          {heatmapEnabled && killmails && killmails.length > 0 && (
+            <HeatmapLayer
+              killmails={killmails}
+              positions={positions}
+              currentTime={heatmapCurrentTime ?? Date.now()}
+              windowDuration={heatmapWindowDuration ?? 24 * 3600_000}
+            />
+          )}
 
           <StarField
             systems={systems}

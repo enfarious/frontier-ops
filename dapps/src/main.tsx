@@ -11,6 +11,11 @@ import { OperatingContextProvider } from "./core/OperatingContext";
 import { getDatabase, migrateFromLocalStorage } from "./core/database";
 
 // Register modules
+import "./modules/mission-control";
+import "./modules/intel";
+import "./modules/tradecraft";
+import "./modules/danger-alerts";
+import "./modules/starmap";
 import "./modules/turret-control";
 import "./modules/gate-control";
 import "./modules/storage-units";
@@ -18,9 +23,6 @@ import "./modules/network-nodes";
 import "./modules/contacts";
 import "./modules/jobs-board";
 import "./modules/bounty-board";
-import "./modules/danger-alerts";
-import "./modules/starmap";
-import "./modules/mission-control";
 import "./modules/tribe-roster";
 
 const queryClient = new QueryClient();

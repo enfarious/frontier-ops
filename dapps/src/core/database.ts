@@ -99,6 +99,65 @@ const SCHEMA = `
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS field_reports (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    solar_system_id TEXT,
+    solar_system_name TEXT,
+    player_id TEXT,
+    player_name TEXT,
+    assembly_type TEXT,
+    assembly_owner TEXT,
+    title TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    threat_level TEXT DEFAULT 'low',
+    reported_at INTEGER NOT NULL,
+    expires_at INTEGER,
+    scope TEXT NOT NULL DEFAULT 'solo'
+  );
+
+  CREATE TABLE IF NOT EXISTS watch_targets (
+    id TEXT PRIMARY KEY,
+    target_type TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    target_name TEXT NOT NULL,
+    priority TEXT NOT NULL DEFAULT 'medium',
+    notes TEXT NOT NULL DEFAULT '',
+    added_at INTEGER NOT NULL,
+    scope TEXT NOT NULL DEFAULT 'solo'
+  );
+
+  CREATE TABLE IF NOT EXISTS asset_sightings (
+    id TEXT PRIMARY KEY,
+    solar_system_id TEXT,
+    solar_system_name TEXT,
+    planet INTEGER,
+    lpoint INTEGER,
+    asset_type TEXT NOT NULL,
+    owner_id TEXT,
+    owner_name TEXT,
+    owner_tribe TEXT,
+    notes TEXT NOT NULL DEFAULT '',
+    threat_level TEXT DEFAULT 'low',
+    status TEXT NOT NULL DEFAULT 'active',
+    first_spotted_at INTEGER NOT NULL,
+    last_confirmed_at INTEGER NOT NULL,
+    scope TEXT NOT NULL DEFAULT 'solo'
+  );
+
+  CREATE TABLE IF NOT EXISTS intel_packages (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    contents TEXT NOT NULL DEFAULT '[]',
+    asking_price TEXT NOT NULL DEFAULT '0',
+    status TEXT NOT NULL DEFAULT 'draft',
+    created_at INTEGER NOT NULL,
+    listed_at INTEGER,
+    on_chain_id TEXT,
+    scope TEXT NOT NULL DEFAULT 'solo'
+  );
 `;
 
 // ─── IndexedDB persistence ──────────────────────────────────────────
@@ -151,6 +210,9 @@ async function initDatabase(): Promise<Database> {
   // Migrations for existing databases
   try { database.run("ALTER TABLE jobs ADD COLUMN on_chain_id TEXT"); } catch { /* column already exists */ }
   try { database.run("ALTER TABLE jobs ADD COLUMN reward_item_type_id INTEGER"); } catch { /* column already exists */ }
+  try { database.run("ALTER TABLE asset_sightings ADD COLUMN planet INTEGER"); } catch { /* column already exists */ }
+  try { database.run("ALTER TABLE asset_sightings ADD COLUMN lpoint INTEGER"); } catch { /* column already exists */ }
+  try { database.run("ALTER TABLE intel_packages ADD COLUMN on_chain_id TEXT"); } catch { /* column already exists */ }
 
   console.log("[FrontierOps] SQLite database ready");
   return database;

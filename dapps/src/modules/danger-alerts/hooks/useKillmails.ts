@@ -88,7 +88,7 @@ function fetchCharacterMap() {
 
   characterMapPromise = (async () => {
     // Try localStorage cache first
-    const cached = getFromCache<CharacterMapData>("character-map", TTL.CHARACTERS);
+    const cached = await getFromCache<CharacterMapData>("character-map", TTL.CHARACTERS);
     if (cached) {
       const map = new Map<string, CharacterInfo>(cached);
       console.log(`[FrontierOps] Character map loaded from cache: ${map.size} characters`);
@@ -121,8 +121,8 @@ function fetchCharacterMap() {
       }
       console.log(`[FrontierOps] Fetched ${map.size} characters from chain, caching`);
 
-      // Cache to localStorage
-      setCache("character-map", Array.from(map.entries()));
+      // Cache to IndexedDB
+      await setCache("character-map", Array.from(map.entries()));
     } catch (err) {
       console.error("[FrontierOps] Failed to fetch character map:", err);
     }
@@ -210,7 +210,7 @@ export function useKillmails() {
     }> => {
       // Try localStorage cache first
       const cacheKey = `killmails:${pageCount}`;
-      const cached = getFromCache<{ killmails: KillmailData[]; hasMore: boolean; nextCursor: string | null }>(cacheKey, TTL.KILLMAILS);
+      const cached = await getFromCache<{ killmails: KillmailData[]; hasMore: boolean; nextCursor: string | null }>(cacheKey, TTL.KILLMAILS);
       if (cached) {
         console.log(`[FrontierOps] Killmails loaded from cache: ${cached.killmails.length} entries`);
         return cached;
@@ -235,7 +235,7 @@ export function useKillmails() {
       const result = { killmails: allKillmails, hasMore, nextCursor: cursor };
 
       // Cache the results
-      setCache(cacheKey, result);
+      await setCache(cacheKey, result);
 
       // Also cache in plain format for Mission Control LLM access
       try {

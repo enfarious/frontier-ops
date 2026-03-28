@@ -37,7 +37,7 @@ export interface TribeRoster {
 
 export async function fetchTribeInfo(tribeId: number): Promise<TribeInfo | null> {
   const cacheKey = `tribe-info:${tribeId}`;
-  const cached = getFromCache<TribeInfo>(cacheKey, TTL.REFERENCE);
+  const cached = await getFromCache<TribeInfo>(cacheKey, TTL.REFERENCE);
   if (cached) return cached;
 
   try {
@@ -52,7 +52,7 @@ export async function fetchTribeInfo(tribeId: number): Promise<TribeInfo | null>
       taxRate: data.taxRate ?? 0,
       tribeUrl: data.tribeUrl || "",
     };
-    setCache(cacheKey, info);
+    await setCache(cacheKey, info);
     return info;
   } catch {
     return null;
@@ -67,7 +67,7 @@ export async function fetchTribeInfo(tribeId: number): Promise<TribeInfo | null>
  */
 export async function fetchTribeRoster(tribeId: number): Promise<TribeMember[]> {
   const cacheKey = `tribe-roster:${tribeId}`;
-  const cached = getFromCache<TribeMember[]>(cacheKey, TTL.ASSEMBLIES);
+  const cached = await getFromCache<TribeMember[]>(cacheKey, TTL.ASSEMBLIES);
   if (cached) {
     console.log(`[FrontierOps] Tribe roster from cache: ${cached.length} members`);
     return cached;
@@ -125,7 +125,7 @@ export async function fetchTribeRoster(tribeId: number): Promise<TribeMember[]> 
     }
   }
 
-  setCache(cacheKey, members);
+  await setCache(cacheKey, members);
   console.log(`[FrontierOps] Tribe roster complete: ${members.length} members`);
   return members;
 }
@@ -153,7 +153,7 @@ export async function fetchTribeData(tribeId: number): Promise<TribeRoster | nul
  */
 export async function fetchMyTribeId(walletAddress: string): Promise<number | null> {
   const cacheKey = `my-tribe:${walletAddress}`;
-  const cached = getFromCache<number>(cacheKey, TTL.ASSEMBLIES);
+  const cached = await getFromCache<number>(cacheKey, TTL.ASSEMBLIES);
   if (cached) return cached;
 
   const profileType = `${WORLD_PKG}::character::PlayerProfile`;
@@ -188,7 +188,7 @@ export async function fetchMyTribeId(walletAddress: string): Promise<number | nu
       ?.contents?.extract?.asAddress?.asObject?.asMoveObject?.contents?.json;
 
     if (json?.tribe_id) {
-      setCache(cacheKey, json.tribe_id);
+      await setCache(cacheKey, json.tribe_id);
       return json.tribe_id;
     }
     return null;

@@ -4,7 +4,7 @@
  * No auth required for public GET queries.
  *
  * Static reference data (solar systems, types, ships, constellations, tribes)
- * is cached in localStorage with a 24h TTL since it rarely changes.
+ * is cached in IndexedDB with a 24h TTL since it rarely changes.
  */
 
 import { getFromCache, setCache, TTL } from "./cache";
@@ -49,7 +49,7 @@ export async function getSolarSystemMap(): Promise<Map<number, SolarSystem>> {
   if (solarSystemMap) return solarSystemMap;
   if (solarSystemPromise) return solarSystemPromise;
 
-  const cached = getFromCache<SolarSystem[]>("solarsystems", TTL.REFERENCE);
+  const cached = await getFromCache<SolarSystem[]>("solarsystems", TTL.REFERENCE);
   if (cached) {
     solarSystemMap = new Map(cached.map((s) => [s.id, s]));
     return solarSystemMap;
@@ -59,7 +59,7 @@ export async function getSolarSystemMap(): Promise<Map<number, SolarSystem>> {
     console.log("[WorldAPI] Fetching all solar systems...");
     const systems = await fetchAllPages<SolarSystem>("/v2/solarsystems", 1000);
     console.log(`[WorldAPI] Cached ${systems.length} solar systems`);
-    setCache("solarsystems", systems);
+    await setCache("solarsystems", systems);
     solarSystemMap = new Map(systems.map((s) => [s.id, s]));
     solarSystemPromise = null;
     return solarSystemMap;
@@ -91,7 +91,7 @@ export async function getTribeMap(): Promise<Map<number, Tribe>> {
   if (tribeMap) return tribeMap;
   if (tribePromise) return tribePromise;
 
-  const cached = getFromCache<Tribe[]>("tribes", TTL.REFERENCE);
+  const cached = await getFromCache<Tribe[]>("tribes", TTL.REFERENCE);
   if (cached) {
     tribeMap = new Map(cached.map((t) => [t.id, t]));
     return tribeMap;
@@ -101,7 +101,7 @@ export async function getTribeMap(): Promise<Map<number, Tribe>> {
     console.log("[WorldAPI] Fetching all tribes...");
     const tribes = await fetchAllPages<Tribe>("/v2/tribes", 500);
     console.log(`[WorldAPI] Cached ${tribes.length} tribes`);
-    setCache("tribes", tribes);
+    await setCache("tribes", tribes);
     tribeMap = new Map(tribes.map((t) => [t.id, t]));
     tribePromise = null;
     return tribeMap;
@@ -133,7 +133,7 @@ export async function getShipMap(): Promise<Map<number, Ship>> {
   if (shipMap) return shipMap;
   if (shipPromise) return shipPromise;
 
-  const cached = getFromCache<Ship[]>("ships", TTL.REFERENCE);
+  const cached = await getFromCache<Ship[]>("ships", TTL.REFERENCE);
   if (cached) {
     shipMap = new Map(cached.map((s) => [s.id, s]));
     return shipMap;
@@ -143,7 +143,7 @@ export async function getShipMap(): Promise<Map<number, Ship>> {
     console.log("[WorldAPI] Fetching all ships...");
     const ships = await fetchAllPages<Ship>("/v2/ships", 500);
     console.log(`[WorldAPI] Cached ${ships.length} ships`);
-    setCache("ships", ships);
+    await setCache("ships", ships);
     shipMap = new Map(ships.map((s) => [s.id, s]));
     shipPromise = null;
     return shipMap;
@@ -171,7 +171,7 @@ export async function getItemTypeMap(): Promise<Map<number, ItemType>> {
   if (typeMap) return typeMap;
   if (typePromise) return typePromise;
 
-  const cached = getFromCache<ItemType[]>("types", TTL.REFERENCE);
+  const cached = await getFromCache<ItemType[]>("types", TTL.REFERENCE);
   if (cached) {
     typeMap = new Map(cached.map((t) => [t.id, t]));
     return typeMap;
@@ -181,7 +181,7 @@ export async function getItemTypeMap(): Promise<Map<number, ItemType>> {
     console.log("[WorldAPI] Fetching all item types...");
     const types = await fetchAllPages<ItemType>("/v2/types", 500);
     console.log(`[WorldAPI] Cached ${types.length} item types`);
-    setCache("types", types);
+    await setCache("types", types);
     typeMap = new Map(types.map((t) => [t.id, t]));
     typePromise = null;
     return typeMap;
