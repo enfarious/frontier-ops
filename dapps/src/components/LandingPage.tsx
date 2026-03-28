@@ -7,6 +7,7 @@
  */
 import { useRef, useEffect, useState, useMemo } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import { getSolarSystemMap, type SolarSystem } from "../core/world-api";
 
@@ -165,7 +166,7 @@ function BlackHoleGlow({ position, intensity }: { position: [number, number, num
 }
 
 // ── Main star field component ─────────────────────────────────
-function StarField({ starData, onReady }: { starData: StarData; onReady: () => void }) {
+function StarField({ starData, onReady, resetKey }: { starData: StarData; onReady: () => void; resetKey: number }) {
   const pointsRef = useRef<THREE.Points>(null);
   const { viewport, pointer } = useThree();
   const frameRef = useRef(0);
@@ -173,12 +174,32 @@ function StarField({ starData, onReady }: { starData: StarData; onReady: () => v
   const [bhPositions, setBhPositions] = useState<[number, number, number][]>([[0, 0, 0], [0, 0, 0], [0, 0, 0]]);
   const texture = useMemo(createStarTexture, []);
 
+  // Store home positions for reset
+  const homePositions = useRef(new Float32Array(starData.positions));
   // Store velocities outside geometry
   const velocities = useRef(starData.velocities);
 
   useEffect(() => {
     onReady();
   }, [onReady]);
+
+  // Reset: snap stars back to home positions, zero velocities, restart frame counter
+  useEffect(() => {
+    if (resetKey === 0) return; // skip initial mount
+    if (!pointsRef.current) return;
+    const positions = pointsRef.current.geometry.attributes.position.array as Float32Array;
+    const home = homePositions.current;
+    const vel = velocities.current;
+    for (let i = 0; i < positions.length; i++) positions[i] = home[i];
+    for (let i = 0; i < vel.length; i++) vel[i] = 0;
+    pointsRef.current.geometry.attributes.position.needsUpdate = true;
+    frameRef.current = 0;
+    // Reset black hole angles
+    const bhs = blackHolesRef.current;
+    bhs[0].angle = 0;
+    bhs[1].angle = Math.PI * 2 / 3;
+    bhs[2].angle = Math.PI * 4 / 3;
+  }, [resetKey]);
 
   useFrame(() => {
     if (!pointsRef.current) return;
@@ -323,11 +344,43 @@ function StarField({ starData, onReady }: { starData: StarData; onReady: () => v
   );
 }
 
+// ── Camera reset helper ───────────────────────────────────────
+function CameraResetter({ resetKey }: { resetKey: number }) {
+  const { camera } = useThree();
+  const controlsRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (resetKey === 0) return;
+    camera.position.set(0, 0, 500);
+    camera.rotation.set(0, 0, 0);
+    if (controlsRef.current) controlsRef.current.reset();
+  }, [resetKey, camera]);
+
+  return (
+    <OrbitControls
+      ref={controlsRef}
+      enablePan={false}
+      enableZoom={true}
+      enableRotate={true}
+      rotateSpeed={0.4}
+      zoomSpeed={0.6}
+      minDistance={100}
+      maxDistance={1500}
+      mouseButtons={{
+        LEFT: THREE.MOUSE.ROTATE,
+        MIDDLE: THREE.MOUSE.DOLLY,
+        RIGHT: THREE.MOUSE.PAN,
+      }}
+    />
+  );
+}
+
 // ── Landing page wrapper ──────────────────────────────────────
 export function LandingPage({ onEnter }: { onEnter: () => void }) {
   const [starData, setStarData] = useState<StarData | null>(null);
   const [showUI, setShowUI] = useState(false);
   const [starCount, setStarCount] = useState(0);
+  const [resetKey, setResetKey] = useState(0);
 
   useEffect(() => {
     getSolarSystemMap().then((systems) => {
@@ -354,7 +407,8 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
           gl.setClearColor(new THREE.Color(0x080a10));
         }}
       >
-        {starData && <StarField starData={starData} onReady={handleReady} />}
+        <CameraResetter resetKey={resetKey} />
+        {starData && <StarField starData={starData} onReady={handleReady} resetKey={resetKey} />}
       </Canvas>
 
       {/* Loading state */}
@@ -488,6 +542,42 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
           <br />
           THE TRINARY AWAITS
         </div>
+
+        {/* Reset button */}
+        <button
+          onClick={() => setResetKey((k) => k + 1)}
+          style={{
+            pointerEvents: "auto",
+            position: "absolute",
+            bottom: "clamp(16px, 3vh, 32px)",
+            right: "clamp(16px, 3vw, 32px)",
+            padding: "6px 14px",
+            fontFamily: "monospace",
+            fontSize: "0.6rem",
+            letterSpacing: "0.1em",
+            color: "rgba(160, 180, 200, 0.5)",
+            background: "rgba(255, 255, 255, 0.03)",
+            border: "1px solid rgba(100, 140, 180, 0.15)",
+            borderRadius: 3,
+            cursor: "pointer",
+            transition: "all 0.3s ease",
+            textTransform: "uppercase",
+          }}
+          onMouseEnter={(e) => {
+            const btn = e.target as HTMLButtonElement;
+            btn.style.color = "rgba(200, 220, 240, 0.8)";
+            btn.style.borderColor = "rgba(64, 180, 255, 0.4)";
+            btn.style.background = "rgba(64, 180, 255, 0.08)";
+          }}
+          onMouseLeave={(e) => {
+            const btn = e.target as HTMLButtonElement;
+            btn.style.color = "rgba(160, 180, 200, 0.5)";
+            btn.style.borderColor = "rgba(100, 140, 180, 0.15)";
+            btn.style.background = "rgba(255, 255, 255, 0.03)";
+          }}
+        >
+          ↺ Reset
+        </button>
       </div>
     </div>
   );
