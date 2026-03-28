@@ -97,16 +97,18 @@ function projectSystems(
 
   const rangePx = maxPx - minPx || 1;
   const rangePz = maxPz - minPz || 1;
-  const padding = 60;
-  const drawW = w - padding * 2;
-  const drawH = h - padding * 2;
 
-  // Maintain aspect ratio
+  // 1.8x overscale so the starfield bleeds past screen edges
+  const OVERSCALE = 1.8;
+  const drawW = w * OVERSCALE;
+  const drawH = h * OVERSCALE;
+
+  // Maintain aspect ratio, centered (overscale means negative offsets)
   const scaleX = drawW / rangePx;
   const scaleZ = drawH / rangePz;
   const scale = Math.min(scaleX, scaleZ);
-  const offsetX = padding + (drawW - rangePx * scale) / 2;
-  const offsetZ = padding + (drawH - rangePz * scale) / 2;
+  const offsetX = (w - rangePx * scale) / 2;
+  const offsetZ = (h - rangePz * scale) / 2;
 
   return projected.map(({ px, pz, sys }) => {
     const screenX = offsetX + (px - minPx) * scale;
@@ -253,53 +255,86 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
         bh.y = bh.cy + Math.sin(bh.angle) * bh.radius;
       }
 
-      // Update stars
+      // Update stars — optimized physics
+      // Pre-compute gravity constant × dt × strength to avoid per-star multiplies
       const mouse = mouseRef.current;
+      const gdt = G * 0.016 * gravityStrength;
+      const mgdt = MOUSE_G * 0.016;
+      const soft2 = SOFTENING * SOFTENING;
+      const damp = DAMPING;
+      const maxSpd2 = MAX_SPEED * MAX_SPEED;
+      const margin = 80;
+
       if (gravityStrength > 0) {
-        for (const star of stars) {
-          // Gravity from black holes
-          for (const bh of blackHoles) {
-            const dx = bh.x - star.x;
-            const dy = bh.y - star.y;
-            const distSq = dx * dx + dy * dy + SOFTENING * SOFTENING;
-            const dist = Math.sqrt(distSq);
-            const force = (G * bh.mass * gravityStrength) / distSq;
-            star.vx += (dx / dist) * force * 0.016;
-            star.vy += (dy / dist) * force * 0.016;
-          }
+        // Cache black hole positions
+        const bh0x = blackHoles[0].x, bh0y = blackHoles[0].y, bh0m = blackHoles[0].mass;
+        const bh1x = blackHoles[1].x, bh1y = blackHoles[1].y, bh1m = blackHoles[1].mass;
+        const bh2x = blackHoles[2].x, bh2y = blackHoles[2].y, bh2m = blackHoles[2].mass;
+        const mx = mouse.x, my = mouse.y, mActive = mouse.active;
+
+        for (let i = 0, len = stars.length; i < len; i++) {
+          const star = stars[i];
+          let vx = star.vx;
+          let vy = star.vy;
+          const sx = star.x;
+          const sy = star.y;
+
+          // Gravity from 3 black holes (unrolled, no inner loop)
+          let dx = bh0x - sx, dy = bh0y - sy;
+          let distSq = dx * dx + dy * dy + soft2;
+          let invDist = 1 / Math.sqrt(distSq);
+          let f = gdt * bh0m / distSq;
+          vx += dx * invDist * f;
+          vy += dy * invDist * f;
+
+          dx = bh1x - sx; dy = bh1y - sy;
+          distSq = dx * dx + dy * dy + soft2;
+          invDist = 1 / Math.sqrt(distSq);
+          f = gdt * bh1m / distSq;
+          vx += dx * invDist * f;
+          vy += dy * invDist * f;
+
+          dx = bh2x - sx; dy = bh2y - sy;
+          distSq = dx * dx + dy * dy + soft2;
+          invDist = 1 / Math.sqrt(distSq);
+          f = gdt * bh2m / distSq;
+          vx += dx * invDist * f;
+          vy += dy * invDist * f;
 
           // Mouse gravity
-          if (mouse.active) {
-            const dx = mouse.x - star.x;
-            const dy = mouse.y - star.y;
-            const distSq = dx * dx + dy * dy + SOFTENING * SOFTENING;
-            const dist = Math.sqrt(distSq);
-            const force = MOUSE_G / distSq;
-            star.vx += (dx / dist) * force * 0.016;
-            star.vy += (dy / dist) * force * 0.016;
+          if (mActive) {
+            dx = mx - sx; dy = my - sy;
+            distSq = dx * dx + dy * dy + soft2;
+            invDist = 1 / Math.sqrt(distSq);
+            f = mgdt / distSq;
+            vx += dx * invDist * f;
+            vy += dy * invDist * f;
           }
 
           // Damping
-          star.vx *= DAMPING;
-          star.vy *= DAMPING;
+          vx *= damp;
+          vy *= damp;
 
-          // Clamp speed
-          const speed = Math.sqrt(star.vx * star.vx + star.vy * star.vy);
-          if (speed > MAX_SPEED) {
-            star.vx = (star.vx / speed) * MAX_SPEED;
-            star.vy = (star.vy / speed) * MAX_SPEED;
+          // Clamp speed (avoid sqrt unless needed)
+          const spd2 = vx * vx + vy * vy;
+          if (spd2 > maxSpd2) {
+            const s = MAX_SPEED / Math.sqrt(spd2);
+            vx *= s;
+            vy *= s;
           }
 
-          // Integrate
-          star.x += star.vx;
-          star.y += star.vy;
+          // Integrate + wrap
+          let nx = sx + vx;
+          let ny = sy + vy;
+          if (nx < -margin) nx = w + margin;
+          else if (nx > w + margin) nx = -margin;
+          if (ny < -margin) ny = h + margin;
+          else if (ny > h + margin) ny = -margin;
 
-          // Soft wrap at edges
-          const margin = 80;
-          if (star.x < -margin) star.x = w + margin;
-          if (star.x > w + margin) star.x = -margin;
-          if (star.y < -margin) star.y = h + margin;
-          if (star.y > h + margin) star.y = -margin;
+          star.vx = vx;
+          star.vy = vy;
+          star.x = nx;
+          star.y = ny;
         }
       }
 
@@ -352,25 +387,32 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
         }
       }
 
-      // Draw stars
+      // Draw stars — performance-optimized
+      // fillRect is ~4x faster than arc for tiny dots.
+      // Only use arc + glow for the ~5% of stars that are large enough to notice.
       for (const star of stars) {
+        // Skip stars fully off-screen
+        if (star.x < -10 || star.x > w + 10 || star.y < -10 || star.y > h + 10) continue;
+
         const [r, g, b] = star.color;
         const alpha = star.brightness;
 
-        // Tiny glow for brighter stars
-        if (star.size > 1.2) {
-          const glowSize = star.size * 3;
-          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha * 0.15})`;
-          ctx.beginPath();
-          ctx.arc(star.x, star.y, glowSize, 0, Math.PI * 2);
-          ctx.fill();
-        }
+        if (star.size > 1.4) {
+          // Larger stars: glow + round core (arc)
+          const glowSize = star.size * 2.5;
+          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha * 0.12})`;
+          ctx.fillRect(star.x - glowSize, star.y - glowSize, glowSize * 2, glowSize * 2);
 
-        // Star core
-        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
-        ctx.beginPath();
-        ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
-        ctx.fill();
+          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+          ctx.beginPath();
+          ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          // Small stars: fast 1-2px filled rectangle
+          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+          const s = star.size < 0.8 ? 1 : 2;
+          ctx.fillRect(star.x, star.y, s, s);
+        }
       }
 
       // Mouse cursor gravity well indicator
