@@ -5,6 +5,7 @@ import { Sidebar } from "./components/Sidebar";
 import { ModuleShell } from "./core/ModuleShell";
 import { getModule } from "./core/module-registry";
 import { EmbeddedTurretView } from "./components/EmbeddedTurretView";
+import { LandingPage } from "./components/LandingPage";
 
 /** Detect if running inside EVE Frontier's in-game assembly behavior panel. */
 function isEmbeddedMode(): boolean {
@@ -22,14 +23,32 @@ function isEmbeddedMode(): boolean {
   return false;
 }
 
+const LANDING_DISMISSED_KEY = "frontier-ops-landing-dismissed";
+
 function App() {
   const [activeModuleId, setActiveModuleId] = useState<string | null>(
     "turret-control",
   );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  // In-game embedded mode: show compact single-assembly controls
+  const [showLanding, setShowLanding] = useState(
+    () => !sessionStorage.getItem(LANDING_DISMISSED_KEY),
+  );
+
+  // In-game embedded mode: skip landing, show compact single-assembly controls
   if (isEmbeddedMode()) {
     return <EmbeddedTurretView />;
+  }
+
+  // Landing page — first visit per session
+  if (showLanding) {
+    return (
+      <LandingPage
+        onEnter={() => {
+          sessionStorage.setItem(LANDING_DISMISSED_KEY, "1");
+          setShowLanding(false);
+        }}
+      />
+    );
   }
 
   const activeModule = activeModuleId ? getModule(activeModuleId) ?? null : null;
