@@ -36,11 +36,15 @@ function starColor(constellationId: number, systemId: number): [number, number, 
 
 // ── Project solar systems to flat coordinates ─────────────────
 interface StarData {
-  positions: Float32Array;  // x, y per star (flat 2D, z=0)
+  positions: Float32Array;  // x, y, z per star (z=0)
   colors: Float32Array;     // r, g, b per star
   sizes: Float32Array;      // point size per star
   velocities: Float32Array; // vx, vy per star
   count: number;
+  // Projection params so black holes use the same coordinate space
+  projectionScale: number;
+  projectionRangePx: number;
+  projectionRangePz: number;
 }
 
 function projectSystems(systems: Map<number, SolarSystem>, viewW: number, viewH: number): StarData {
@@ -99,25 +103,53 @@ function projectSystems(systems: Map<number, SolarSystem>, viewW: number, viewH:
     velocities[i * 2 + 1] = 0;
   }
 
-  return { positions, colors, sizes, velocities, count };
+  // Also export projection params so black holes can use the same transform
+  const projectionScale = scale;
+  const projectionRangePx = rangePx;
+  const projectionRangePz = rangePz;
+
+  return { positions, colors, sizes, velocities, count, projectionScale, projectionRangePx, projectionRangePz };
 }
 
 // ── Black hole attractor ──────────────────────────────────────
 interface BlackHole {
   x: number; y: number;
+  cx: number; cy: number; // home position (orbit center)
   mass: number;
   radius: number;
   angle: number;
   speed: number;
 }
 
-function createTrinar(viewW: number, viewH: number): BlackHole[] {
-  const orbitRadius = Math.min(viewW, viewH) * 0.04;
-  return [
-    { x: 0, y: 0, mass: 1.0, radius: orbitRadius, angle: 0, speed: 0.0008 },
-    { x: 0, y: 0, mass: 0.85, radius: orbitRadius * 0.7, angle: Math.PI * 2 / 3, speed: -0.0012 },
-    { x: 0, y: 0, mass: 0.7, radius: orbitRadius * 1.2, angle: Math.PI * 4 / 3, speed: 0.0006 },
-  ];
+// Trinary black hole positions — computed from starfield density peaks.
+// Three clear clusters in the EVE Frontier solar system data (Gaussian-smoothed 100x100 grid).
+// Nearest systems: BH0 → IMG-FSN, BH1 → E98-NV7, BH2 → IC6-G44
+// These are normalized 0-1 coordinates in the projected starfield.
+const TRINARY_POSITIONS = [
+  { nx: 0.5650, ny: 0.3550, mass: 1.0 },   // densest cluster (294)
+  { nx: 0.6050, ny: 0.4150, mass: 0.85 },   // second (249)
+  { nx: 0.5150, ny: 0.3850, mass: 0.7 },    // third (193)
+];
+
+function createTrinar(starData: StarData): BlackHole[] {
+  const { projectionScale, projectionRangePx, projectionRangePz } = starData;
+  const totalW = projectionRangePx * projectionScale;
+  const totalH = projectionRangePz * projectionScale;
+  const orbitRadius = Math.min(totalW, totalH) * 0.008;
+
+  return TRINARY_POSITIONS.map((bh, i) => {
+    // Same transform as star projection: (normalized * range * scale) - total/2
+    const cx = (bh.nx * projectionRangePx * projectionScale) - totalW / 2;
+    const cy = -((bh.ny * projectionRangePz * projectionScale) - totalH / 2);
+    return {
+      x: cx, y: cy,
+      cx, cy,
+      mass: bh.mass,
+      radius: orbitRadius,
+      angle: (i * Math.PI * 2) / 3,
+      speed: [0.0008, -0.0012, 0.0006][i],
+    };
+  });
 }
 
 // ── Star point sprite texture ─────────────────────────────────
@@ -170,7 +202,7 @@ function StarField({ starData, onReady, resetKey }: { starData: StarData; onRead
   const pointsRef = useRef<THREE.Points>(null);
   const { viewport, pointer } = useThree();
   const frameRef = useRef(0);
-  const blackHolesRef = useRef<BlackHole[]>(createTrinar(viewport.width, viewport.height));
+  const blackHolesRef = useRef<BlackHole[]>(createTrinar(starData));
   const [bhPositions, setBhPositions] = useState<[number, number, number][]>([[0, 0, 0], [0, 0, 0], [0, 0, 0]]);
   const texture = useMemo(createStarTexture, []);
 
@@ -194,11 +226,13 @@ function StarField({ starData, onReady, resetKey }: { starData: StarData; onRead
     for (let i = 0; i < vel.length; i++) vel[i] = 0;
     pointsRef.current.geometry.attributes.position.needsUpdate = true;
     frameRef.current = 0;
-    // Reset black hole angles
+    // Reset black hole angles and positions
     const bhs = blackHolesRef.current;
-    bhs[0].angle = 0;
-    bhs[1].angle = Math.PI * 2 / 3;
-    bhs[2].angle = Math.PI * 4 / 3;
+    for (let i = 0; i < bhs.length; i++) {
+      bhs[i].angle = (i * Math.PI * 2) / 3;
+      bhs[i].x = bhs[i].cx + Math.cos(bhs[i].angle) * bhs[i].radius;
+      bhs[i].y = bhs[i].cy + Math.sin(bhs[i].angle) * bhs[i].radius;
+    }
   }, [resetKey]);
 
   useFrame(() => {
@@ -213,11 +247,11 @@ function StarField({ starData, onReady, resetKey }: { starData: StarData; onRead
     const vel = velocities.current;
     const count = starData.count;
 
-    // Update black holes
+    // Update black holes — each orbits around its home position
     for (const bh of bhs) {
       bh.angle += bh.speed;
-      bh.x = Math.cos(bh.angle) * bh.radius;
-      bh.y = Math.sin(bh.angle) * bh.radius;
+      bh.x = bh.cx + Math.cos(bh.angle) * bh.radius;
+      bh.y = bh.cy + Math.sin(bh.angle) * bh.radius;
     }
 
     // Update glow positions
