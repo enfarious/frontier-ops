@@ -387,32 +387,69 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
         }
       }
 
-      // Draw stars — performance-optimized
-      // fillRect is ~4x faster than arc for tiny dots.
-      // Only use arc + glow for the ~5% of stars that are large enough to notice.
-      for (const star of stars) {
-        // Skip stars fully off-screen
+      // Draw stars — pixel buffer for small stars, canvas API for large ones.
+      // Writing to ImageData avoids 24k fillStyle string parses per frame.
+      const imageData = ctx.getImageData(0, 0, w, h);
+      const pixels = imageData.data;
+      const stride = w * 4;
+
+      for (let i = 0, len = stars.length; i < len; i++) {
+        const star = stars[i];
+        const sx = star.x | 0; // fast floor
+        const sy = star.y | 0;
+
+        // Skip off-screen
+        if (sx < 0 || sx >= w || sy < 0 || sy >= h) continue;
+
+        const [r, g, b] = star.color;
+        const a = (star.brightness * 255) | 0;
+
+        if (star.size > 1.4) {
+          // Large stars: draw via canvas API (few of these, ~5%)
+          // We'll handle these in a second pass below
+          continue;
+        }
+
+        // Small stars: write 1-2 pixels directly
+        const idx = sy * stride + sx * 4;
+        // Additive blend (approximation: just max with existing)
+        pixels[idx] = Math.min(255, pixels[idx] + ((r * a) >> 8));
+        pixels[idx + 1] = Math.min(255, pixels[idx + 1] + ((g * a) >> 8));
+        pixels[idx + 2] = Math.min(255, pixels[idx + 2] + ((b * a) >> 8));
+        pixels[idx + 3] = 255;
+
+        // 2px stars get a neighbor pixel too
+        if (star.size > 0.8 && sx + 1 < w) {
+          const idx2 = idx + 4;
+          const a2 = (a * 0.6) | 0;
+          pixels[idx2] = Math.min(255, pixels[idx2] + ((r * a2) >> 8));
+          pixels[idx2 + 1] = Math.min(255, pixels[idx2 + 1] + ((g * a2) >> 8));
+          pixels[idx2 + 2] = Math.min(255, pixels[idx2 + 2] + ((b * a2) >> 8));
+          pixels[idx2 + 3] = 255;
+        }
+      }
+
+      ctx.putImageData(imageData, 0, 0);
+
+      // Second pass: large stars via canvas API (only ~5% of stars)
+      for (let i = 0, len = stars.length; i < len; i++) {
+        const star = stars[i];
+        if (star.size <= 1.4) continue;
         if (star.x < -10 || star.x > w + 10 || star.y < -10 || star.y > h + 10) continue;
 
         const [r, g, b] = star.color;
         const alpha = star.brightness;
 
-        if (star.size > 1.4) {
-          // Larger stars: glow + round core (arc)
-          const glowSize = star.size * 2.5;
-          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha * 0.12})`;
-          ctx.fillRect(star.x - glowSize, star.y - glowSize, glowSize * 2, glowSize * 2);
+        // Soft glow
+        const glowSize = star.size * 2.5;
+        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha * 0.12})`;
+        ctx.fillRect(star.x - glowSize, star.y - glowSize, glowSize * 2, glowSize * 2);
 
-          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
-          ctx.beginPath();
-          ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
-          ctx.fill();
-        } else {
-          // Small stars: fast 1-2px filled rectangle
-          ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
-          const s = star.size < 0.8 ? 1 : 2;
-          ctx.fillRect(star.x, star.y, s, s);
-        }
+        // Core
+        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+        ctx.beginPath();
+        ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
+        ctx.fill();
       }
 
       // Mouse cursor gravity well indicator
