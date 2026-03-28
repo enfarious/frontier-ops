@@ -12,6 +12,7 @@ import {
 import { Cross1Icon, PlusIcon } from "@radix-ui/react-icons";
 import { useCurrentAccount } from "@mysten/dapp-kit-react";
 import { getItemTypeMap, type ItemType } from "../../core/world-api";
+import { appendVisibility, type Visibility } from "../../core/visibility";
 
 interface JobCreateDialogProps {
   open: boolean;
@@ -29,6 +30,7 @@ export function JobCreateDialog({
   const [description, setDescription] = useState("");
   const [rewardSui, setRewardSui] = useState("");
   const [competitive, setCompetitive] = useState(false);
+  const [visibility, setVisibility] = useState<Visibility>("public");
   const [deliverables, setDeliverables] = useState<
     { itemName: string; targetQuantity: string; search: string }[]
   >([]);
@@ -44,6 +46,7 @@ export function JobCreateDialog({
     setDescription("");
     setRewardSui("");
     setCompetitive(false);
+    setVisibility("public");
     setDeliverables([]);
   }
 
@@ -62,6 +65,7 @@ export function JobCreateDialog({
       if (delivLines) fullDesc += (fullDesc ? "\n\n" : "") + "Deliverables:\n" + delivLines;
     }
 
+    fullDesc = appendVisibility(fullDesc, visibility);
     onCreate(title.trim(), fullDesc, amount, competitive);
     reset();
     onOpenChange(false);
@@ -208,6 +212,46 @@ export function JobCreateDialog({
                 ? "Competitive — multiple workers race to deliver, first wins"
                 : "Assigned — single worker accepts and completes"}
             </Text>
+          </Flex>
+
+          {/* Visibility */}
+          <Flex direction="column" gap="1">
+            <Text size="1" color="gray">Visibility</Text>
+            <Flex gap="2">
+              {(["public", "tribe", "friends"] as const).map((v) => (
+                <Flex
+                  key={v}
+                  align="center"
+                  gap="1"
+                  onClick={() => setVisibility(v)}
+                  style={{ cursor: "pointer" }}
+                >
+                  <div style={{
+                    width: 14, height: 14, borderRadius: 3,
+                    border: `1px solid ${visibility === v ? "var(--accent-9)" : "var(--gray-7)"}`,
+                    background: visibility === v ? "var(--accent-9)" : "transparent",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                  }}>
+                    {visibility === v && (
+                      <Text size="1" style={{ color: "white", lineHeight: 1, fontSize: 9 }}>✓</Text>
+                    )}
+                  </div>
+                  <Text size="1" color={visibility === v ? undefined : "gray"}>
+                    {v === "public" ? "Public" : v === "tribe" ? "Tribe Only" : "Friends Only"}
+                  </Text>
+                </Flex>
+              ))}
+            </Flex>
+            {visibility === "friends" && (
+              <Text size="1" color="orange">
+                Only your contacts will see this. Chain readers still can — intel is a weapon.
+              </Text>
+            )}
+            {visibility === "tribe" && (
+              <Text size="1" color="blue">
+                Only tribe members will see this in the UI.
+              </Text>
+            )}
           </Flex>
         </Flex>
 

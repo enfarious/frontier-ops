@@ -4,6 +4,7 @@ import { useCurrentAccount } from "@mysten/dapp-kit-react";
 import type { EnrichedBounty } from "./hooks/useOnChainBounties";
 import { BOUNTY_STATUS_OPTIONS } from "./bounty-types";
 import type { KillmailData } from "../danger-alerts/danger-types";
+import { parseVisibility, stripVisibility } from "../../core/visibility";
 
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -46,6 +47,8 @@ export function BountyDetail({
   const isCreator = account?.address === bounty.creator;
   const hasHunter = bounty.hunter !== ZERO_ADDR;
   const statusOpt = BOUNTY_STATUS_OPTIONS.find((s) => s.value === bounty.status);
+  const visibility = parseVisibility(bounty.description);
+  const cleanDescription = stripVisibility(bounty.description);
   const [proofInput, setProofInput] = useState("");
 
   // Find killmails matching the bounty target
@@ -69,6 +72,11 @@ export function BountyDetail({
             <Flex align="center" gap="2">
               <Heading size="3">{bounty.title || "(untitled)"}</Heading>
               <Badge color="blue" size="1" variant="surface">On-Chain Escrow</Badge>
+              {visibility !== "public" && (
+                <Badge color={visibility === "tribe" ? "blue" : "orange"} size="1" variant="soft">
+                  {visibility === "tribe" ? "Tribe" : "Friends"}
+                </Badge>
+              )}
             </Flex>
             <Badge color={statusOpt?.color ?? "gray"} size="2">
               {statusOpt?.label ?? `Status(${bounty.status})`}
@@ -76,8 +84,8 @@ export function BountyDetail({
           </Flex>
           <Separator size="4" />
 
-          {bounty.description && (
-            <Text size="2" style={{ whiteSpace: "pre-wrap" }}>{bounty.description}</Text>
+          {cleanDescription && (
+            <Text size="2" style={{ whiteSpace: "pre-wrap" }}>{cleanDescription}</Text>
           )}
 
           <Flex gap="4" wrap="wrap">

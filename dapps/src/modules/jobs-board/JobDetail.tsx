@@ -2,6 +2,7 @@ import { Badge, Button, Card, Flex, Heading, Separator, Text } from "@radix-ui/t
 import { useCurrentAccount } from "@mysten/dapp-kit-react";
 import type { OnChainJob } from "../../core/job-escrow-queries";
 import { JOB_STATUS_OPTIONS } from "./jobs-types";
+import { parseVisibility, stripVisibility } from "../../core/visibility";
 
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -38,6 +39,8 @@ export function JobDetail({
       : false;
 
   const statusOpt = JOB_STATUS_OPTIONS.find((s) => s.value === job.status);
+  const visibility = parseVisibility(job.description);
+  const cleanDescription = stripVisibility(job.description);
 
   return (
     <Flex direction="column" gap="4">
@@ -50,6 +53,11 @@ export function JobDetail({
               {job.competitive && (
                 <Badge color="orange" size="1" variant="surface">Competitive</Badge>
               )}
+              {visibility !== "public" && (
+                <Badge color={visibility === "tribe" ? "blue" : "orange"} size="1" variant="soft">
+                  {visibility === "tribe" ? "Tribe" : "Friends"}
+                </Badge>
+              )}
             </Flex>
             <Badge color={statusOpt?.color ?? "gray"} size="2">
               {statusOpt?.label ?? `Status(${job.status})`}
@@ -57,12 +65,12 @@ export function JobDetail({
           </Flex>
           <Separator size="4" />
 
-          {job.description && (
+          {cleanDescription && (
             <Text size="2" style={{ whiteSpace: "pre-wrap" }}>
-              {job.description}
+              {cleanDescription}
             </Text>
           )}
-          {!job.description && (
+          {!cleanDescription && (
             <Text size="2" color="gray">No description.</Text>
           )}
 
