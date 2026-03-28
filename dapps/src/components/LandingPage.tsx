@@ -2,93 +2,58 @@
  * FrontierOps Landing Page — the actual EVE Frontier starfield
  * collapsing into the Trinary (three black holes).
  *
- * Loads all 24,500+ solar systems from the World API, projects them
- * to 2D, colors them by constellation, then lets gravity pull them
- * into three attractor points representing the Trinary.
- *
- * Mouse creates a fourth gravity well. Pure canvas, real data, real math.
+ * Three.js Points cloud — GPU renders all 24,500+ stars in a single draw call.
+ * Physics runs on CPU, positions uploaded to GPU each frame via buffer attributes.
  */
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState, useMemo } from "react";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import * as THREE from "three";
 import { getSolarSystemMap, type SolarSystem } from "../core/world-api";
 
 // ── Simulation constants ──────────────────────────────────────
-const G = 600;                    // gravitational constant
-const MOUSE_G = 2000;             // mouse gravity
-const DAMPING = 0.997;            // velocity damping per frame
+const G = 600;
+const MOUSE_G = 2000;
+const DAMPING = 0.997;
 const MAX_SPEED = 6;
-const SOFTENING = 50;             // prevent div-by-zero
-const GRAVITY_RAMP_FRAMES = 180;  // frames to ramp gravity from 0→1 (3s at 60fps)
-const INITIAL_PAUSE_FRAMES = 90;  // frames before gravity starts (1.5s to admire the map)
+const SOFTENING = 50;
+const GRAVITY_RAMP_FRAMES = 180;
+const INITIAL_PAUSE_FRAMES = 90;
+const OVERSCALE = 1.8;
 
 // ── Star color from constellation — spectral classes ──────────
-// Hash constellation into a star color: blue-white, white, yellow, orange, red
 function starColor(constellationId: number, systemId: number): [number, number, number] {
-  // Mix constellation and system for variety within clusters
   const hash = ((constellationId * 137.508) + (systemId * 0.618)) % 1;
   const classHash = ((constellationId * 73.856) % 1 + (systemId * 0.0001)) % 1;
 
-  // Spectral distribution weighted toward cooler stars (realistic)
-  if (classHash < 0.03) {
-    // O/B class — blue-white (rare, hot)
-    return [140 + hash * 60, 180 + hash * 40, 255];
-  } else if (classHash < 0.12) {
-    // A class — white-blue
-    return [180 + hash * 40, 200 + hash * 30, 240 + hash * 15];
-  } else if (classHash < 0.25) {
-    // F class — white-yellow
-    return [240 + hash * 15, 230 + hash * 20, 200 + hash * 30];
-  } else if (classHash < 0.50) {
-    // G class — yellow (sun-like)
-    return [255, 220 + hash * 30, 120 + hash * 60];
-  } else if (classHash < 0.75) {
-    // K class — orange
-    return [255, 160 + hash * 50, 60 + hash * 40];
-  } else {
-    // M class — red (most common)
-    return [255, 80 + hash * 60, 40 + hash * 30];
-  }
+  if (classHash < 0.03) return [0.55 + hash * 0.23, 0.71 + hash * 0.16, 1.0];
+  if (classHash < 0.12) return [0.71 + hash * 0.16, 0.78 + hash * 0.12, 0.94 + hash * 0.06];
+  if (classHash < 0.25) return [0.94 + hash * 0.06, 0.90 + hash * 0.08, 0.78 + hash * 0.12];
+  if (classHash < 0.50) return [1.0, 0.86 + hash * 0.12, 0.47 + hash * 0.24];
+  if (classHash < 0.75) return [1.0, 0.63 + hash * 0.20, 0.24 + hash * 0.16];
+  return [1.0, 0.31 + hash * 0.24, 0.16 + hash * 0.12];
 }
 
-interface Star {
-  // Position
-  x: number; y: number;
-  // Home position (real star location)
-  homeX: number; homeY: number;
-  // Velocity
-  vx: number; vy: number;
-  // Visual
-  color: [number, number, number];
-  brightness: number; // 0-1
-  size: number;
+// ── Project solar systems to flat coordinates ─────────────────
+interface StarData {
+  positions: Float32Array;  // x, y per star (flat 2D, z=0)
+  colors: Float32Array;     // r, g, b per star
+  sizes: Float32Array;      // point size per star
+  velocities: Float32Array; // vx, vy per star
+  count: number;
 }
 
-interface BlackHole {
-  x: number; y: number;
-  mass: number;
-  // Orbital params (they orbit each other)
-  cx: number; cy: number;
-  radius: number;
-  angle: number;
-  speed: number;
-}
-
-function projectSystems(
-  systems: Map<number, SolarSystem>,
-  w: number,
-  h: number,
-): Star[] {
+function projectSystems(systems: Map<number, SolarSystem>, viewW: number, viewH: number): StarData {
   const cos30 = Math.cos(Math.PI / 6);
   const sin30 = Math.sin(Math.PI / 6);
 
-  // Project 3D → 2D (same as starmap)
-  const projected: { px: number; pz: number; sys: SolarSystem }[] = [];
+  const entries: { px: number; pz: number; sys: SolarSystem }[] = [];
   let minPx = Infinity, maxPx = -Infinity;
   let minPz = Infinity, maxPz = -Infinity;
 
   for (const [, sys] of systems) {
     const px = sys.location.x + sys.location.y * cos30;
     const pz = sys.location.z + sys.location.y * sin30;
-    projected.push({ px, pz, sys });
+    entries.push({ px, pz, sys });
     if (px < minPx) minPx = px;
     if (px > maxPx) maxPx = px;
     if (pz < minPz) minPz = pz;
@@ -97,410 +62,311 @@ function projectSystems(
 
   const rangePx = maxPx - minPx || 1;
   const rangePz = maxPz - minPz || 1;
-
-  // 1.8x overscale so the starfield bleeds past screen edges
-  const OVERSCALE = 1.8;
-  const drawW = w * OVERSCALE;
-  const drawH = h * OVERSCALE;
-
-  // Maintain aspect ratio, centered (overscale means negative offsets)
+  const drawW = viewW * OVERSCALE;
+  const drawH = viewH * OVERSCALE;
   const scaleX = drawW / rangePx;
   const scaleZ = drawH / rangePz;
   const scale = Math.min(scaleX, scaleZ);
-  const offsetX = (w - rangePx * scale) / 2;
-  const offsetZ = (h - rangePz * scale) / 2;
 
-  return projected.map(({ px, pz, sys }) => {
-    const screenX = offsetX + (px - minPx) * scale;
-    const screenY = offsetZ + (pz - minPz) * scale;
+  // Center in view (coordinates in world units centered at 0,0)
+  const totalW = rangePx * scale;
+  const totalH = rangePz * scale;
+
+  const count = entries.length;
+  const positions = new Float32Array(count * 3);
+  const colors = new Float32Array(count * 3);
+  const sizes = new Float32Array(count);
+  const velocities = new Float32Array(count * 2);
+
+  for (let i = 0; i < count; i++) {
+    const { px, pz, sys } = entries[i];
+    // Map to centered coordinates
+    const x = ((px - minPx) * scale) - totalW / 2;
+    const y = -(((pz - minPz) * scale) - totalH / 2); // flip Y for Three.js
+
+    positions[i * 3] = x;
+    positions[i * 3 + 1] = y;
+    positions[i * 3 + 2] = 0;
+
     const [r, g, b] = starColor(sys.constellationId, sys.id);
-    // Brightness varies by "depth" (y coordinate gives depth feel)
-    const depthNorm = (sys.location.y - (-1e12)) / 2e12; // rough normalize
-    const brightness = 0.3 + Math.abs(depthNorm % 1) * 0.7;
+    colors[i * 3] = r;
+    colors[i * 3 + 1] = g;
+    colors[i * 3 + 2] = b;
 
-    return {
-      x: screenX,
-      y: screenY,
-      homeX: screenX,
-      homeY: screenY,
-      vx: 0,
-      vy: 0,
-      color: [r, g, b] as [number, number, number],
-      brightness: Math.min(1, Math.max(0.2, brightness)),
-      size: 0.5 + Math.random() * 1.5,
-    };
-  });
+    sizes[i] = 1.5 + Math.random() * 2.5;
+    velocities[i * 2] = 0;
+    velocities[i * 2 + 1] = 0;
+  }
+
+  return { positions, colors, sizes, velocities, count };
 }
 
-function createTrinar(w: number, h: number): BlackHole[] {
-  const cx = w / 2;
-  const cy = h / 2;
-  const orbitRadius = Math.min(w, h) * 0.06;
+// ── Black hole attractor ──────────────────────────────────────
+interface BlackHole {
+  x: number; y: number;
+  mass: number;
+  radius: number;
+  angle: number;
+  speed: number;
+}
 
+function createTrinar(viewW: number, viewH: number): BlackHole[] {
+  const orbitRadius = Math.min(viewW, viewH) * 0.04;
   return [
-    {
-      x: cx, y: cy,
-      mass: 1.0,
-      cx, cy,
-      radius: orbitRadius,
-      angle: 0,
-      speed: 0.0008,
-    },
-    {
-      x: cx, y: cy,
-      mass: 0.85,
-      cx, cy,
-      radius: orbitRadius * 0.7,
-      angle: Math.PI * 2 / 3,
-      speed: -0.0012, // counter-orbiting
-    },
-    {
-      x: cx, y: cy,
-      mass: 0.7,
-      cx, cy,
-      radius: orbitRadius * 1.2,
-      angle: Math.PI * 4 / 3,
-      speed: 0.0006,
-    },
+    { x: 0, y: 0, mass: 1.0, radius: orbitRadius, angle: 0, speed: 0.0008 },
+    { x: 0, y: 0, mass: 0.85, radius: orbitRadius * 0.7, angle: Math.PI * 2 / 3, speed: -0.0012 },
+    { x: 0, y: 0, mass: 0.7, radius: orbitRadius * 1.2, angle: Math.PI * 4 / 3, speed: 0.0006 },
   ];
 }
 
-export function LandingPage({ onEnter }: { onEnter: () => void }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const animRef = useRef<number>(0);
-  const mouseRef = useRef<{ x: number; y: number; active: boolean }>({ x: 0, y: 0, active: false });
-  const stateRef = useRef<{
-    stars: Star[];
-    blackHoles: BlackHole[];
-    frame: number;
-    loaded: boolean;
-  } | null>(null);
-  const [showUI, setShowUI] = useState(false);
-  const [starCount, setStarCount] = useState(0);
+// ── Star point sprite texture ─────────────────────────────────
+function createStarTexture(): THREE.Texture {
+  const size = 64;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
 
-  // Load real star data
-  useEffect(() => {
-    getSolarSystemMap().then((systems) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const stars = projectSystems(systems, canvas.width, canvas.height);
-      const blackHoles = createTrinar(canvas.width, canvas.height);
-      stateRef.current = { stars, blackHoles, frame: 0, loaded: true };
-      setStarCount(stars.length);
-      // Show UI shortly after stars appear
-      setTimeout(() => setShowUI(true), 800);
-    });
-  }, []);
+  // Radial gradient: bright center, soft falloff
+  const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  grad.addColorStop(0, "rgba(255, 255, 255, 1.0)");
+  grad.addColorStop(0.15, "rgba(255, 255, 255, 0.8)");
+  grad.addColorStop(0.4, "rgba(255, 255, 255, 0.15)");
+  grad.addColorStop(1, "rgba(255, 255, 255, 0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d")!;
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  return tex;
+}
 
-    function resize() {
-      canvas!.width = window.innerWidth;
-      canvas!.height = window.innerHeight;
-      // If already loaded, reproject
-      if (stateRef.current?.loaded) {
-        getSolarSystemMap().then((systems) => {
-          const stars = projectSystems(systems, canvas!.width, canvas!.height);
-          const blackHoles = createTrinar(canvas!.width, canvas!.height);
-          // Preserve velocities from existing stars if count matches
-          const old = stateRef.current?.stars;
-          if (old && old.length === stars.length) {
-            for (let i = 0; i < stars.length; i++) {
-              stars[i].vx = old[i].vx;
-              stars[i].vy = old[i].vy;
-            }
-          }
-          stateRef.current = { stars, blackHoles, frame: stateRef.current?.frame ?? 0, loaded: true };
-        });
-      }
+// ── Black hole glow mesh ──────────────────────────────────────
+function BlackHoleGlow({ position, intensity }: { position: [number, number, number]; intensity: number }) {
+  const meshRef = useRef<THREE.Mesh>(null);
+
+  useFrame(() => {
+    if (meshRef.current) {
+      meshRef.current.position.set(position[0], position[1], position[2]);
     }
-    resize();
-    window.addEventListener("resize", resize);
+  });
 
-    function tick() {
-      const state = stateRef.current;
-      const w = canvas!.width;
-      const h = canvas!.height;
+  return (
+    <mesh ref={meshRef} position={position}>
+      <circleGeometry args={[40 + intensity * 30, 32]} />
+      <meshBasicMaterial
+        color={new THREE.Color(0.24, 0.47, 0.78)}
+        transparent
+        opacity={0.06 * intensity}
+        depthWrite={false}
+      />
+    </mesh>
+  );
+}
 
-      // Pre-load: just draw dark background
-      if (!state?.loaded) {
-        ctx.fillStyle = "#080a10";
-        ctx.fillRect(0, 0, w, h);
+// ── Main star field component ─────────────────────────────────
+function StarField({ starData, onReady }: { starData: StarData; onReady: () => void }) {
+  const pointsRef = useRef<THREE.Points>(null);
+  const { viewport, pointer } = useThree();
+  const frameRef = useRef(0);
+  const blackHolesRef = useRef<BlackHole[]>(createTrinar(viewport.width, viewport.height));
+  const [bhPositions, setBhPositions] = useState<[number, number, number][]>([[0, 0, 0], [0, 0, 0], [0, 0, 0]]);
+  const texture = useMemo(createStarTexture, []);
 
-        // Loading text
-        ctx.fillStyle = "rgba(100, 140, 180, 0.4)";
-        ctx.font = "12px monospace";
-        ctx.textAlign = "center";
-        ctx.fillText("LOADING STAR CHART...", w / 2, h / 2);
+  // Store velocities outside geometry
+  const velocities = useRef(starData.velocities);
 
-        animRef.current = requestAnimationFrame(tick);
-        return;
-      }
+  useEffect(() => {
+    onReady();
+  }, [onReady]);
 
-      const { stars, blackHoles } = state;
-      state.frame++;
-      const frame = state.frame;
+  useFrame(() => {
+    if (!pointsRef.current) return;
 
-      // Gravity ramp: 0 during pause, then 0→1 over GRAVITY_RAMP_FRAMES
-      const gravityPhase = Math.max(0, frame - INITIAL_PAUSE_FRAMES);
-      const gravityStrength = Math.min(1, gravityPhase / GRAVITY_RAMP_FRAMES);
+    const frame = ++frameRef.current;
+    const gravityPhase = Math.max(0, frame - INITIAL_PAUSE_FRAMES);
+    const gravityStrength = Math.min(1, gravityPhase / GRAVITY_RAMP_FRAMES);
 
-      // Update black hole positions (Trinary orbit)
-      for (const bh of blackHoles) {
-        bh.angle += bh.speed;
-        bh.x = bh.cx + Math.cos(bh.angle) * bh.radius;
-        bh.y = bh.cy + Math.sin(bh.angle) * bh.radius;
-      }
+    const bhs = blackHolesRef.current;
+    const positions = pointsRef.current.geometry.attributes.position.array as Float32Array;
+    const vel = velocities.current;
+    const count = starData.count;
 
-      // Update stars — optimized physics
-      // Pre-compute gravity constant × dt × strength to avoid per-star multiplies
-      const mouse = mouseRef.current;
+    // Update black holes
+    for (const bh of bhs) {
+      bh.angle += bh.speed;
+      bh.x = Math.cos(bh.angle) * bh.radius;
+      bh.y = Math.sin(bh.angle) * bh.radius;
+    }
+
+    // Update glow positions
+    setBhPositions(bhs.map(bh => [bh.x, bh.y, -1] as [number, number, number]));
+
+    if (gravityStrength > 0) {
       const gdt = G * 0.016 * gravityStrength;
       const mgdt = MOUSE_G * 0.016;
       const soft2 = SOFTENING * SOFTENING;
-      const damp = DAMPING;
       const maxSpd2 = MAX_SPEED * MAX_SPEED;
-      const margin = 80;
+      const damp = DAMPING;
 
-      if (gravityStrength > 0) {
-        // Cache black hole positions
-        const bh0x = blackHoles[0].x, bh0y = blackHoles[0].y, bh0m = blackHoles[0].mass;
-        const bh1x = blackHoles[1].x, bh1y = blackHoles[1].y, bh1m = blackHoles[1].mass;
-        const bh2x = blackHoles[2].x, bh2y = blackHoles[2].y, bh2m = blackHoles[2].mass;
-        const mx = mouse.x, my = mouse.y, mActive = mouse.active;
+      const bh0x = bhs[0].x, bh0y = bhs[0].y, bh0m = bhs[0].mass;
+      const bh1x = bhs[1].x, bh1y = bhs[1].y, bh1m = bhs[1].mass;
+      const bh2x = bhs[2].x, bh2y = bhs[2].y, bh2m = bhs[2].mass;
 
-        for (let i = 0, len = stars.length; i < len; i++) {
-          const star = stars[i];
-          let vx = star.vx;
-          let vy = star.vy;
-          const sx = star.x;
-          const sy = star.y;
+      // Convert pointer to world coords
+      const mouseX = pointer.x * viewport.width / 2;
+      const mouseY = pointer.y * viewport.height / 2;
+      // Mouse is "active" when pointer is inside the canvas area
+      const mouseActive = Math.abs(pointer.x) < 1 && Math.abs(pointer.y) < 1;
 
-          // Gravity from 3 black holes (unrolled, no inner loop)
-          let dx = bh0x - sx, dy = bh0y - sy;
-          let distSq = dx * dx + dy * dy + soft2;
-          let invDist = 1 / Math.sqrt(distSq);
-          let f = gdt * bh0m / distSq;
-          vx += dx * invDist * f;
-          vy += dy * invDist * f;
+      for (let i = 0; i < count; i++) {
+        const pi3 = i * 3;
+        const vi2 = i * 2;
+        const sx = positions[pi3];
+        const sy = positions[pi3 + 1];
+        let vx = vel[vi2];
+        let vy = vel[vi2 + 1];
 
-          dx = bh1x - sx; dy = bh1y - sy;
+        // Gravity from Trinary (unrolled)
+        let dx = bh0x - sx, dy = bh0y - sy;
+        let distSq = dx * dx + dy * dy + soft2;
+        let invDist = 1 / Math.sqrt(distSq);
+        let f = gdt * bh0m / distSq;
+        vx += dx * invDist * f;
+        vy += dy * invDist * f;
+
+        dx = bh1x - sx; dy = bh1y - sy;
+        distSq = dx * dx + dy * dy + soft2;
+        invDist = 1 / Math.sqrt(distSq);
+        f = gdt * bh1m / distSq;
+        vx += dx * invDist * f;
+        vy += dy * invDist * f;
+
+        dx = bh2x - sx; dy = bh2y - sy;
+        distSq = dx * dx + dy * dy + soft2;
+        invDist = 1 / Math.sqrt(distSq);
+        f = gdt * bh2m / distSq;
+        vx += dx * invDist * f;
+        vy += dy * invDist * f;
+
+        // Mouse gravity
+        if (mouseActive) {
+          dx = mouseX - sx; dy = mouseY - sy;
           distSq = dx * dx + dy * dy + soft2;
           invDist = 1 / Math.sqrt(distSq);
-          f = gdt * bh1m / distSq;
+          f = mgdt / distSq;
           vx += dx * invDist * f;
           vy += dy * invDist * f;
-
-          dx = bh2x - sx; dy = bh2y - sy;
-          distSq = dx * dx + dy * dy + soft2;
-          invDist = 1 / Math.sqrt(distSq);
-          f = gdt * bh2m / distSq;
-          vx += dx * invDist * f;
-          vy += dy * invDist * f;
-
-          // Mouse gravity
-          if (mActive) {
-            dx = mx - sx; dy = my - sy;
-            distSq = dx * dx + dy * dy + soft2;
-            invDist = 1 / Math.sqrt(distSq);
-            f = mgdt / distSq;
-            vx += dx * invDist * f;
-            vy += dy * invDist * f;
-          }
-
-          // Damping
-          vx *= damp;
-          vy *= damp;
-
-          // Clamp speed (avoid sqrt unless needed)
-          const spd2 = vx * vx + vy * vy;
-          if (spd2 > maxSpd2) {
-            const s = MAX_SPEED / Math.sqrt(spd2);
-            vx *= s;
-            vy *= s;
-          }
-
-          // Integrate + wrap
-          let nx = sx + vx;
-          let ny = sy + vy;
-          if (nx < -margin) nx = w + margin;
-          else if (nx > w + margin) nx = -margin;
-          if (ny < -margin) ny = h + margin;
-          else if (ny > h + margin) ny = -margin;
-
-          star.vx = vx;
-          star.vy = vy;
-          star.x = nx;
-          star.y = ny;
-        }
-      }
-
-      // ── Render ──────────────────────────────────────────────
-
-      // Fade background — creates trail effect once stars are moving
-      if (gravityStrength > 0.1) {
-        // Stronger fade = shorter trails
-        const fadeAlpha = 0.08 + gravityStrength * 0.07;
-        ctx.fillStyle = `rgba(8, 10, 16, ${fadeAlpha})`;
-        ctx.fillRect(0, 0, w, h);
-      } else {
-        // Solid background when stars are stationary
-        ctx.fillStyle = "#080a10";
-        ctx.fillRect(0, 0, w, h);
-      }
-
-      // Subtle grid (only visible in early frames)
-      if (gravityStrength < 0.5) {
-        const gridAlpha = 0.04 * (1 - gravityStrength * 2);
-        ctx.strokeStyle = `rgba(40, 60, 80, ${gridAlpha})`;
-        ctx.lineWidth = 0.5;
-        const gridSize = 100;
-        for (let x = 0; x < w; x += gridSize) {
-          ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
-        }
-        for (let y = 0; y < h; y += gridSize) {
-          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-        }
-      }
-
-      // Draw black hole accretion glow
-      for (const bh of blackHoles) {
-        const glowRadius = 40 + bh.mass * 30 + gravityStrength * 20;
-        const grad = ctx.createRadialGradient(bh.x, bh.y, 0, bh.x, bh.y, glowRadius);
-        grad.addColorStop(0, `rgba(60, 120, 200, ${0.12 * gravityStrength})`);
-        grad.addColorStop(0.4, `rgba(100, 60, 180, ${0.06 * gravityStrength})`);
-        grad.addColorStop(1, "transparent");
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(bh.x, bh.y, glowRadius, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Core
-        if (gravityStrength > 0.3) {
-          ctx.fillStyle = `rgba(20, 20, 30, ${gravityStrength * 0.8})`;
-          ctx.beginPath();
-          ctx.arc(bh.x, bh.y, 3, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
-
-      // Draw stars — pixel buffer for small stars, canvas API for large ones.
-      // Writing to ImageData avoids 24k fillStyle string parses per frame.
-      const imageData = ctx.getImageData(0, 0, w, h);
-      const pixels = imageData.data;
-      const stride = w * 4;
-
-      for (let i = 0, len = stars.length; i < len; i++) {
-        const star = stars[i];
-        const sx = star.x | 0; // fast floor
-        const sy = star.y | 0;
-
-        // Skip off-screen
-        if (sx < 0 || sx >= w || sy < 0 || sy >= h) continue;
-
-        const [r, g, b] = star.color;
-        const a = (star.brightness * 255) | 0;
-
-        if (star.size > 1.4) {
-          // Large stars: draw via canvas API (few of these, ~5%)
-          // We'll handle these in a second pass below
-          continue;
         }
 
-        // Small stars: write 1-2 pixels directly
-        const idx = sy * stride + sx * 4;
-        // Additive blend (approximation: just max with existing)
-        pixels[idx] = Math.min(255, pixels[idx] + ((r * a) >> 8));
-        pixels[idx + 1] = Math.min(255, pixels[idx + 1] + ((g * a) >> 8));
-        pixels[idx + 2] = Math.min(255, pixels[idx + 2] + ((b * a) >> 8));
-        pixels[idx + 3] = 255;
+        vx *= damp;
+        vy *= damp;
 
-        // 2px stars get a neighbor pixel too
-        if (star.size > 0.8 && sx + 1 < w) {
-          const idx2 = idx + 4;
-          const a2 = (a * 0.6) | 0;
-          pixels[idx2] = Math.min(255, pixels[idx2] + ((r * a2) >> 8));
-          pixels[idx2 + 1] = Math.min(255, pixels[idx2 + 1] + ((g * a2) >> 8));
-          pixels[idx2 + 2] = Math.min(255, pixels[idx2 + 2] + ((b * a2) >> 8));
-          pixels[idx2 + 3] = 255;
+        const spd2 = vx * vx + vy * vy;
+        if (spd2 > maxSpd2) {
+          const s = MAX_SPEED / Math.sqrt(spd2);
+          vx *= s;
+          vy *= s;
         }
+
+        positions[pi3] = sx + vx;
+        positions[pi3 + 1] = sy + vy;
+
+        vel[vi2] = vx;
+        vel[vi2 + 1] = vy;
       }
 
-      ctx.putImageData(imageData, 0, 0);
-
-      // Second pass: large stars via canvas API (only ~5% of stars)
-      for (let i = 0, len = stars.length; i < len; i++) {
-        const star = stars[i];
-        if (star.size <= 1.4) continue;
-        if (star.x < -10 || star.x > w + 10 || star.y < -10 || star.y > h + 10) continue;
-
-        const [r, g, b] = star.color;
-        const alpha = star.brightness;
-
-        // Soft glow
-        const glowSize = star.size * 2.5;
-        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha * 0.12})`;
-        ctx.fillRect(star.x - glowSize, star.y - glowSize, glowSize * 2, glowSize * 2);
-
-        // Core
-        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
-        ctx.beginPath();
-        ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // Mouse cursor gravity well indicator
-      if (mouse.active) {
-        const grad = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 60);
-        grad.addColorStop(0, "rgba(255, 200, 100, 0.1)");
-        grad.addColorStop(1, "transparent");
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(mouse.x, mouse.y, 60, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      animRef.current = requestAnimationFrame(tick);
+      pointsRef.current.geometry.attributes.position.needsUpdate = true;
     }
+  });
 
-    animRef.current = requestAnimationFrame(tick);
+  return (
+    <>
+      <points ref={pointsRef}>
+        <bufferGeometry>
+          <bufferAttribute
+            attach="attributes-position"
+            args={[starData.positions, 3]}
+          />
+          <bufferAttribute
+            attach="attributes-color"
+            args={[starData.colors, 3]}
+          />
+          <bufferAttribute
+            attach="attributes-size"
+            args={[starData.sizes, 1]}
+          />
+        </bufferGeometry>
+        <pointsMaterial
+          vertexColors
+          size={3}
+          sizeAttenuation={false}
+          map={texture}
+          transparent
+          opacity={0.9}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+        />
+      </points>
 
-    // Mouse/touch handlers
-    const onMove = (e: MouseEvent) => {
-      mouseRef.current = { x: e.clientX, y: e.clientY, active: true };
-    };
-    const onLeave = () => { mouseRef.current.active = false; };
-    const onTouch = (e: TouchEvent) => {
-      if (e.touches.length > 0) {
-        mouseRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, active: true };
-      }
-    };
-    const onTouchEnd = () => { mouseRef.current.active = false; };
+      {/* Black hole glows */}
+      {bhPositions.map((pos, i) => (
+        <BlackHoleGlow
+          key={i}
+          position={pos}
+          intensity={Math.min(1, frameRef.current > INITIAL_PAUSE_FRAMES
+            ? (frameRef.current - INITIAL_PAUSE_FRAMES) / GRAVITY_RAMP_FRAMES
+            : 0)}
+        />
+      ))}
+    </>
+  );
+}
 
-    canvas.addEventListener("mousemove", onMove);
-    canvas.addEventListener("mouseleave", onLeave);
-    canvas.addEventListener("touchmove", onTouch, { passive: true });
-    canvas.addEventListener("touchend", onTouchEnd);
+// ── Landing page wrapper ──────────────────────────────────────
+export function LandingPage({ onEnter }: { onEnter: () => void }) {
+  const [starData, setStarData] = useState<StarData | null>(null);
+  const [showUI, setShowUI] = useState(false);
+  const [starCount, setStarCount] = useState(0);
 
-    return () => {
-      cancelAnimationFrame(animRef.current);
-      window.removeEventListener("resize", resize);
-      canvas.removeEventListener("mousemove", onMove);
-      canvas.removeEventListener("mouseleave", onLeave);
-      canvas.removeEventListener("touchmove", onTouch);
-      canvas.removeEventListener("touchend", onTouchEnd);
-    };
+  useEffect(() => {
+    getSolarSystemMap().then((systems) => {
+      // Use window dimensions for projection
+      const data = projectSystems(systems, window.innerWidth, window.innerHeight);
+      setStarData(data);
+      setStarCount(data.count);
+    });
+  }, []);
+
+  const handleReady = useMemo(() => () => {
+    setTimeout(() => setShowUI(true), 800);
   }, []);
 
   return (
     <div style={{ position: "relative", width: "100vw", height: "100vh", overflow: "hidden", background: "#080a10" }}>
-      <canvas
-        ref={canvasRef}
-        style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", cursor: "crosshair" }}
-      />
+      {/* Three.js Canvas */}
+      <Canvas
+        style={{ position: "absolute", top: 0, left: 0 }}
+        camera={{ position: [0, 0, 500], fov: 75, near: 1, far: 2000 }}
+        gl={{ antialias: false, alpha: false }}
+        dpr={Math.min(window.devicePixelRatio, 2)}
+        onCreated={({ gl }) => {
+          gl.setClearColor(new THREE.Color(0x080a10));
+        }}
+      >
+        {starData && <StarField starData={starData} onReady={handleReady} />}
+      </Canvas>
+
+      {/* Loading state */}
+      {!starData && (
+        <div style={{
+          position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
+        }}>
+          <span style={{ fontFamily: "monospace", fontSize: 12, color: "rgba(100, 140, 180, 0.4)" }}>
+            LOADING STAR CHART...
+          </span>
+        </div>
+      )}
 
       {/* Overlay UI */}
       <div
@@ -516,7 +382,6 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
           transition: "opacity 1.5s ease",
         }}
       >
-        {/* Title */}
         <h1
           style={{
             fontFamily: "monospace",
@@ -533,7 +398,6 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
           FRONTIER OPS
         </h1>
 
-        {/* Subtitle */}
         <p
           style={{
             fontFamily: "monospace",
@@ -548,7 +412,6 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
           OUTPOST OPERATOR'S CONSOLE
         </p>
 
-        {/* Decorative line */}
         <div
           style={{
             width: "clamp(100px, 20vw, 200px)",
@@ -558,7 +421,6 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
           }}
         />
 
-        {/* Status indicators */}
         <div
           style={{
             display: "flex",
@@ -575,7 +437,6 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
           <span>{starCount.toLocaleString()} SYSTEMS <span style={{ color: "rgba(255, 220, 80, 0.9)" }}>●</span></span>
         </div>
 
-        {/* Enter button */}
         <button
           onClick={onEnter}
           style={{
@@ -610,7 +471,6 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
           Enter Console
         </button>
 
-        {/* Bottom credits */}
         <div
           style={{
             position: "absolute",
