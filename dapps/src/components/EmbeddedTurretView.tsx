@@ -31,19 +31,22 @@ interface DirectAssembly {
 const GRAPHQL_ENDPOINT = import.meta.env.VITE_SUI_GRAPHQL_ENDPOINT || "https://graphql.testnet.sui.io/graphql";
 
 /** Query a single assembly directly by Sui object ID — no wallet needed */
-async function fetchAssemblyDirect(objectId: string): Promise<DirectAssembly | null> {
-  // Check cache first (2 min TTL — status can change)
+async function fetchAssemblyDirect(objectId: string, skipCache = false): Promise<DirectAssembly | null> {
   const cacheKey = `embedded-assembly:${objectId}`;
-  try {
-    const raw = localStorage.getItem(cacheKey);
-    if (raw) {
-      const entry = JSON.parse(raw);
-      if (Date.now() - entry.fetchedAt < 2 * 60 * 1000) {
-        console.log("[FrontierOps] Embedded assembly from cache:", objectId);
-        return entry.data;
+
+  // Check cache first (2 min TTL — status can change)
+  if (!skipCache) {
+    try {
+      const raw = localStorage.getItem(cacheKey);
+      if (raw) {
+        const entry = JSON.parse(raw);
+        if (Date.now() - entry.fetchedAt < 2 * 60 * 1000) {
+          console.log("[FrontierOps] Embedded assembly from cache:", objectId);
+          return entry.data;
+        }
       }
-    }
-  } catch {}
+    } catch {}
+  }
 
   const query = `{
     object(address: "${objectId}") {
@@ -238,13 +241,18 @@ export function EmbeddedTurretView() {
   const assemblyTypeNameStr = isTurret ? "Turret" : isSSU ? "StorageUnit" : isGate ? "Gate" : "Assembly";
   const characterId = "0x59c82d2c45e7c2c85aaca295b3acb6faebcf71ccb19d2865f3733cf6210dfb45";
 
-  const handleRefresh = useCallback(() => {
+  const handleRefresh = useCallback(async () => {
     if (sdkHasData && smartObject.refetch) {
       smartObject.refetch();
+    } else if (id) {
+      // Re-fetch directly, skipping cache
+      console.log("[FrontierOps] Refreshing assembly (cache bust):", id);
+      const fresh = await fetchAssemblyDirect(id, true);
+      if (fresh) setDirectAssembly(fresh);
     } else {
       window.location.reload();
     }
-  }, [sdkHasData, smartObject]);
+  }, [sdkHasData, smartObject, id]);
 
   console.log("[FrontierOps] EmbeddedView:", {
     url: window.location.href,
@@ -298,7 +306,8 @@ export function EmbeddedTurretView() {
         : await buildBringOnlineTx(actionArgs);
       const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       console.log("[FrontierOps] Power toggle success:", result);
-      setTimeout(handleRefresh, 2000);
+      // Wait for indexer then refresh (skip cache)
+      setTimeout(handleRefresh, 3000);
     } catch (e) {
       console.error("[FrontierOps] Toggle state failed:", e);
     } finally {
