@@ -69,7 +69,6 @@ export async function fetchTribeRoster(tribeId: number): Promise<TribeMember[]> 
   const cacheKey = `tribe-roster:${tribeId}`;
   const cached = await getFromCache<TribeMember[]>(cacheKey, TTL.ASSEMBLIES);
   if (cached) {
-    console.log(`[FrontierOps] Tribe roster from cache: ${cached.length} members`);
     return cached;
   }
 
@@ -115,7 +114,6 @@ export async function fetchTribeRoster(tribeId: number): Promise<TribeMember[]> 
       }
 
       page++;
-      console.log(`[FrontierOps] Tribe roster page ${page}: ${members.length} members so far`);
 
       if (!pageInfo?.hasNextPage || !pageInfo?.endCursor) break;
       cursor = pageInfo.endCursor;
@@ -126,7 +124,6 @@ export async function fetchTribeRoster(tribeId: number): Promise<TribeMember[]> 
   }
 
   await setCache(cacheKey, members);
-  console.log(`[FrontierOps] Tribe roster complete: ${members.length} members`);
   return members;
 }
 

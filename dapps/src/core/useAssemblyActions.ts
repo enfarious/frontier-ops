@@ -14,8 +14,12 @@ import {
 } from "./assembly-actions";
 import { buildAuthorizeExtensionTx } from "./authorize-extension";
 
-/** Character ID — TODO: derive from wallet connection dynamically */
-const CHARACTER_ID = "0x59c82d2c45e7c2c85aaca295b3acb6faebcf71ccb19d2865f3733cf6210dfb45";
+/** Reads the character's Sui object ID, cached by useCharacterAssemblies */
+function getCharacterId(): string {
+  const id = localStorage.getItem("frontier-ops-character-id");
+  if (!id) throw new Error("Character ID not found — connect wallet first");
+  return id;
+}
 
 interface AssemblyInfo {
   /** Sui object ID of the assembly */
@@ -42,7 +46,6 @@ export function useAssemblyActions() {
     try {
       const tx = await buildFn();
       const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      console.log("[FrontierOps] Transaction success:", result);
       return result;
     } catch (e: any) {
       console.error("[FrontierOps] Transaction failed:", e);
@@ -56,7 +59,7 @@ export function useAssemblyActions() {
   const bringOnline = useCallback(async (info: AssemblyInfo) => {
     if (!info.energySourceId) throw new Error("Energy source ID required for online");
     return execute(() => buildBringOnlineTx({
-      characterId: CHARACTER_ID,
+      characterId: getCharacterId(),
       assemblyId: info.id,
       ownerCapId: info.ownerCapId,
       assemblyModule: info.assemblyModule,
@@ -68,7 +71,7 @@ export function useAssemblyActions() {
   const bringOffline = useCallback(async (info: AssemblyInfo) => {
     if (!info.energySourceId) throw new Error("Energy source ID required for offline");
     return execute(() => buildBringOfflineTx({
-      characterId: CHARACTER_ID,
+      characterId: getCharacterId(),
       assemblyId: info.id,
       ownerCapId: info.ownerCapId,
       assemblyModule: info.assemblyModule,
@@ -79,7 +82,7 @@ export function useAssemblyActions() {
 
   const rename = useCallback(async (info: AssemblyInfo, newName: string) => {
     return execute(() => buildRenameTx({
-      characterId: CHARACTER_ID,
+      characterId: getCharacterId(),
       assemblyId: info.id,
       ownerCapId: info.ownerCapId,
       assemblyModule: info.assemblyModule,
@@ -90,7 +93,7 @@ export function useAssemblyActions() {
 
   const updateDescription = useCallback(async (info: AssemblyInfo, description: string) => {
     return execute(() => buildUpdateDescriptionTx({
-      characterId: CHARACTER_ID,
+      characterId: getCharacterId(),
       assemblyId: info.id,
       ownerCapId: info.ownerCapId,
       assemblyModule: info.assemblyModule,
@@ -101,7 +104,7 @@ export function useAssemblyActions() {
 
   const updateUrl = useCallback(async (info: AssemblyInfo, url: string) => {
     return execute(() => buildUpdateUrlTx({
-      characterId: CHARACTER_ID,
+      characterId: getCharacterId(),
       assemblyId: info.id,
       ownerCapId: info.ownerCapId,
       assemblyModule: info.assemblyModule,
@@ -117,7 +120,7 @@ export function useAssemblyActions() {
     authTypeName: string,
   ) => {
     return execute(() => buildAuthorizeExtensionTx({
-      characterId: CHARACTER_ID,
+      characterId: getCharacterId(),
       assemblyId: info.id,
       ownerCapId: info.ownerCapId,
       assemblyModule: info.assemblyModule,

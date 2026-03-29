@@ -76,16 +76,12 @@ export function useScopedAssemblies() {
       const cacheKey = `tribe-assemblies:${tribeId}:${membersToScan.length}`;
       const cached = await getFromCache<AssemblyData[]>(cacheKey, TTL.TRIBE_ASSEMBLIES);
       if (cached) {
-        console.log(`[FrontierOps] Tribe assemblies from cache: ${cached.length} items`);
         return cached;
       }
-
-      console.log(`[FrontierOps] Fetching assemblies for ${membersToScan.length}/${memberAddresses.length} tribe members...`);
 
       const results = await fetchTribeAssemblies(membersToScan);
       const unique = dedup(results);
 
-      console.log(`[FrontierOps] Tribe assemblies complete: ${unique.length} total`);
       await setCache(cacheKey, unique);
 
       return unique;

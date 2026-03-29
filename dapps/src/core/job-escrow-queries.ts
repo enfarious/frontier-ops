@@ -104,7 +104,6 @@ export async function fetchOnChainJobs(): Promise<OnChainJob[]> {
     });
 
     cache = { jobs, fetchedAt: Date.now() };
-    console.log(`[JobEscrow] Fetched ${jobs.length} on-chain jobs`);
     return jobs;
   } catch (err) {
     console.error("[JobEscrow] Failed to fetch on-chain jobs:", err);

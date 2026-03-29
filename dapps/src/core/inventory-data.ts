@@ -66,15 +66,11 @@ export async function fetchSSUInventory(ssuObjectId: string): Promise<InventoryD
       const valueJson = field?.value?.json;
 
       if (valueType.includes("inventory::Inventory") && valueJson) {
-        console.log("[FrontierOps] Raw inventory JSON:", JSON.stringify(valueJson));
-
         // Inventory struct: { max_capacity, used_capacity, items: VecMap }
         maxVolume = Number(valueJson.max_capacity || 0);
 
         // VecMap<u64, ItemEntry> serializes as { contents: [{ key, value }, ...] }
         const vecMapContents = valueJson.items?.contents || [];
-        console.log(`[FrontierOps] Inventory has ${vecMapContents.length} item entries`);
-
         for (const entry of vecMapContents) {
           // entry = { key: typeId (u64), value: { tenant, type_id, item_id, volume, quantity } }
           const itemData = entry.value || entry;
@@ -82,8 +78,6 @@ export async function fetchSSUInventory(ssuObjectId: string): Promise<InventoryD
           const quantity = Number(itemData.quantity || 0);
           const volume = Number(itemData.volume || 0);
           const typeName = await resolveTypeName(typeId);
-
-          console.log(`[FrontierOps] Inventory item: ${typeName} (type ${typeId}) x${quantity}, vol ${volume}`);
 
           inventoryItems.push({
             typeId,
@@ -94,12 +88,6 @@ export async function fetchSSUInventory(ssuObjectId: string): Promise<InventoryD
           totalVolume += volume * quantity;
         }
       }
-    }
-
-    if (inventoryItems.length === 0) {
-      // Debug: log all dynamic field types so we can see what's there
-      console.log("[FrontierOps] No inventory found. Dynamic field types:",
-        dynamicFields.map((f: any) => f?.value?.type?.repr || "unknown"));
     }
 
     return {

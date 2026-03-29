@@ -124,13 +124,85 @@ export const MISSION_CONTROL_TOOLS: ToolDefinition[] = [
     },
   },
 
+  // === CRAFTING & INDUSTRY ===
+  {
+    type: "function",
+    function: {
+      name: "lookup_recipe",
+      description:
+        "Look up the crafting recipe for an item. Returns the required input materials and quantities. Use this to answer questions like 'what do I need to build X?' or 'what goes into making Y?'",
+      parameters: {
+        type: "object",
+        properties: {
+          item: {
+            type: "string",
+            description: "Item name or type ID to look up the recipe for",
+          },
+        },
+        required: ["item"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_full_bill_of_materials",
+      description:
+        "Recursively expand a recipe to get the complete list of raw mineable/harvestable materials needed, accounting for sub-components. Use this to build targeted mining plans — e.g. 'what raw materials do I need to build 10 Turrets?'",
+      parameters: {
+        type: "object",
+        properties: {
+          item: {
+            type: "string",
+            description: "Item name or type ID to expand",
+          },
+          quantity: {
+            type: "number",
+            description: "How many of the item you want to produce. Default: 1",
+          },
+        },
+        required: ["item"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "lookup_refinery",
+      description:
+        "Look up refinery data for an item. If the item is a refinery source (e.g. Rich Common Ore), shows what it refines into. If it's a refinery output (e.g. Water Ice, Silicon Dust), shows which source materials can produce it. Use this when a raw material lookup shows something that might come from refining.",
+      parameters: {
+        type: "object",
+        properties: {
+          item: {
+            type: "string",
+            description: "Item name or type ID to look up refinery info for",
+          },
+        },
+        required: ["item"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_raw_materials",
+      description:
+        "List all known raw materials (mineable resources, salvage, etc.) in EVE Frontier. Use this to understand what resources exist before planning a mining operation.",
+      parameters: {
+        type: "object",
+        properties: {},
+      },
+    },
+  },
+
   // === ON-CHAIN ACTIONS (require user confirmation) ===
   {
     type: "function",
     function: {
       name: "set_power",
       description:
-        "Bring an assembly online or offline. IMPORTANT: This executes an on-chain transaction — always confirm with the user first.",
+        "Bring an assembly online or offline. Executes an on-chain transaction — the UI will show a Confirm button to the user.",
       parameters: {
         type: "object",
         properties: {
@@ -153,7 +225,7 @@ export const MISSION_CONTROL_TOOLS: ToolDefinition[] = [
     function: {
       name: "rename_assembly",
       description:
-        "Rename an assembly on-chain. IMPORTANT: This executes an on-chain transaction — always confirm with the user first.",
+        "Rename an assembly on-chain. Executes an on-chain transaction — the UI will show a Confirm button to the user.",
       parameters: {
         type: "object",
         properties: {
@@ -175,7 +247,7 @@ export const MISSION_CONTROL_TOOLS: ToolDefinition[] = [
     function: {
       name: "set_ssu_access",
       description:
-        "Set access control rules on a Smart Storage Unit. Controls who can deposit and withdraw. IMPORTANT: This executes an on-chain transaction — always confirm with the user first.",
+        "Set access control rules on a Smart Storage Unit. Controls who can deposit and withdraw. Executes an on-chain transaction — the UI will show a Confirm button to the user.",
       parameters: {
         type: "object",
         properties: {
@@ -229,12 +301,13 @@ YOUR CAPABILITIES:
 - Look up solar systems, contacts, and roles
 
 IMPORTANT RULES:
-1. For ANY on-chain action (power, rename, access), ALWAYS describe what you're about to do and ask for confirmation BEFORE executing.
+1. For on-chain actions (power, rename, access), call the tool immediately — the UI will present a Confirm/Cancel button to the user automatically. Do NOT ask for verbal confirmation first.
 2. Be concise — this may be viewed on a narrow in-game panel or phone screen.
 3. Use EVE Frontier terminology (assemblies, smart storage units, network nodes, tribes).
 4. When listing assemblies, show name (or "Unnamed"), status, and item ID.
 5. Proactively warn about issues (low fuel, offline nodes, threats nearby).
 6. If you don't have enough info, use the available tools to look it up rather than guessing.
+7. After an action is confirmed, always re-query the relevant assemblies with list_assemblies or get_assembly_details to report the updated state.
 
 You have a dry, competent tone — like a military operations center. Brief status reports, clear recommendations, decisive language.`;
 }

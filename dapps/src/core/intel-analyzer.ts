@@ -27,19 +27,26 @@ export function computeThreatScore(stats: {
 }): number {
   const { kills, deaths, structureKills, lastSeenTimestamp, uniqueSystems } = stats;
 
-  // Kill volume: logarithmic, 0-30 pts
-  const killPts = Math.min(30, Math.log2(kills + 1) * 6);
-
-  // K/D ratio: 0-20 pts
+  // Kill volume: log10 scale so it differentiates up to ~1000 kills (0–30 raw pts),
+  // then multiplied by min(1, K/D) so players who die more than they kill have their
+  // volume score dragged down proportionally — 500/2000 is far less threatening than 500/50.
   const kd = kills / Math.max(deaths, 1);
-  const kdPts = Math.min(20, kd * 5);
+  const killVolumeRaw = Math.min(30, Math.log10(kills + 1) * 12);
+  const killPts = killVolumeRaw * Math.min(1, kd);
 
-  // Recency: linear decay over 30 days, 0-25 pts
+  // K/D efficiency with confidence dampening: 0–40 pts.
+  // confidence = kills / (kills + 20): near-zero at 1–5 kills (could be luck),
+  // ~0.5 at 20 kills, ~0.8 at 80 kills, ~0.98 at 1000+ kills.
+  // A sustained record earns full weight; a handful of kills doesn't.
+  const confidence = kills / (kills + 20);
+  const kdPts = Math.min(40, kd * confidence * 8);
+
+  // Recency: linear decay over 30 days, 0–20 pts
   const daysSinceSeen = (Date.now() - lastSeenTimestamp) / DAY_MS;
-  const recencyPts = 25 * Math.max(0, 1 - daysSinceSeen / 30);
+  const recencyPts = 20 * Math.max(0, 1 - daysSinceSeen / 30);
 
-  // Structure hunter: 0-15 pts
-  const structurePts = Math.min(15, structureKills * 5);
+  // Structure hunter: 0–10 pts
+  const structurePts = Math.min(10, structureKills * 5);
 
   // Activity breadth: multi-system presence, 0-10 pts
   const breadthPts = Math.min(10, uniqueSystems * 2);

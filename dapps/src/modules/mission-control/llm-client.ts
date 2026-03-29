@@ -7,7 +7,8 @@ export interface LLMConfig {
   endpoint: string;       // e.g. "http://localhost:11434/v1"
   model: string;          // e.g. "qwen/qwen3.5-9b"
   apiKey: string;         // "" for local, "sk-..." for OpenAI
-  maxTokens: number;
+  maxTokens: number;      // max output tokens per response
+  contextLength: number;  // total model context window (input + output)
 }
 
 export interface ChatMessage {
@@ -42,6 +43,7 @@ const DEFAULT_CONFIG: LLMConfig = {
   model: "qwen/qwen3.5-9b",
   apiKey: "",
   maxTokens: 2048,
+  contextLength: 8192,
 };
 
 export function loadLLMConfig(): LLMConfig {
@@ -191,6 +193,39 @@ export async function chatCompletion(
   } catch (err) {
     callbacks.onError(`Connection failed: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+/** Rough token estimate — good enough for display and trim decisions. */
+export function estimateTokens(messages: ChatMessage[]): number {
+  let chars = 0;
+  for (const m of messages) {
+    chars += (m.content ?? "").length;
+    if (m.tool_calls) chars += JSON.stringify(m.tool_calls).length;
+  }
+  return Math.ceil(chars / 3.5);
+}
+
+/**
+ * Trim chat history to stay under maxTokens.
+ * Always preserves the system prompt (index 0) and the most recent messages.
+ * Removes complete exchanges (user → assistant → tool results) from the oldest end.
+ */
+export function trimHistory(messages: ChatMessage[], maxTokens: number): ChatMessage[] {
+  if (estimateTokens(messages) <= maxTokens) return messages;
+
+  const system = messages[0]?.role === "system" ? [messages[0]] : [];
+  const rest = messages.slice(system.length);
+
+  // Find safe cut points: indices where a new user message starts a fresh exchange
+  let trimmed = [...rest];
+  while (estimateTokens([...system, ...trimmed]) > maxTokens && trimmed.length > 2) {
+    // Find next user message after index 0 to cut from the front
+    const nextUser = trimmed.findIndex((m, i) => i > 0 && m.role === "user");
+    if (nextUser === -1) break;
+    trimmed = trimmed.slice(nextUser);
+  }
+
+  return [...system, ...trimmed];
 }
 
 export interface ModelInfo {

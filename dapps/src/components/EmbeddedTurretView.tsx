@@ -44,7 +44,6 @@ async function fetchAssemblyDirect(objectId: string, skipCache = false): Promise
       if (raw) {
         const entry = JSON.parse(raw);
         if (Date.now() - entry.fetchedAt < 2 * 60 * 1000) {
-          console.log("[FrontierOps] Embedded assembly from cache:", objectId);
           return entry.data;
         }
       }
@@ -141,7 +140,6 @@ async function resolveItemId(itemId: string, tenant = "stillness"): Promise<stri
       `${WORLD_PKG}::in_game_id::TenantItemId`,
       key,
     );
-    console.log("[FrontierOps] Resolved itemId", itemId, "→", objectId);
     return objectId;
   } catch (err) {
     console.error("[FrontierOps] Failed to resolve itemId:", itemId, err);
@@ -249,19 +247,12 @@ export function EmbeddedTurretView() {
       smartObject.refetch();
     } else if (id) {
       // Re-fetch directly, skipping cache
-      console.log("[FrontierOps] Refreshing assembly (cache bust):", id);
       const fresh = await fetchAssemblyDirect(id, true);
       if (fresh) setDirectAssembly(fresh);
     } else {
       window.location.reload();
     }
   }, [sdkHasData, smartObject, id]);
-
-  console.log("[FrontierOps] EmbeddedView:", {
-    url: window.location.href,
-    sdkHasData, needsDirect,
-    id, state, name, categoryName, itemId,
-  });
 
   if (loading) {
     return (
@@ -307,8 +298,7 @@ export function EmbeddedTurretView() {
       const tx = isOnline
         ? await buildBringOfflineTx(actionArgs)
         : await buildBringOnlineTx(actionArgs);
-      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      console.log("[FrontierOps] Power toggle success:", result);
+      await dAppKit.signAndExecuteTransaction({ transaction: tx });
       // Wait for indexer then refresh (skip cache)
       setTimeout(handleRefresh, 3000);
     } catch (e) {
@@ -450,8 +440,7 @@ function RenameSection({
         assemblyTypeName,
         newName: newName.trim(),
       });
-      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      console.log("[FrontierOps] Rename success:", result);
+      await dAppKit.signAndExecuteTransaction({ transaction: tx });
       setNewName("");
       setTimeout(onRenamed, 2000);
     } catch (e: any) {
@@ -542,7 +531,6 @@ function SSUAccessControl({ ssuId }: { ssuId: string }) {
       const tx = await buildSetAccessRulesTx(account.address, ssuId, updated);
       await dAppKit.signAndExecuteTransaction({ transaction: tx });
       setRules(updated);
-      console.log("[FrontierOps] Access rules saved");
     } catch (e: any) {
       console.error("[FrontierOps] Save access rules failed:", e);
       setError(e?.message || "Failed to save");
@@ -799,11 +787,9 @@ function EmbeddedJobsBoard({ ssuId }: { ssuId: string }) {
     fetchAccessRules(ssuId).then((rules) => {
       if (rules === null) {
         // No access rules set — default SSU config, allow jobs board
-        console.log("[FrontierOps] No access rules found for SSU, showing jobs board by default");
         setEligible(true);
       } else {
         const ok = rules.openDeposit && !rules.openWithdraw;
-        console.log("[FrontierOps] SSU access rules:", { openDeposit: rules.openDeposit, openWithdraw: rules.openWithdraw, eligible: ok });
         setEligible(ok);
       }
     }).catch((err) => {
@@ -839,8 +825,7 @@ function EmbeddedJobsBoard({ ssuId }: { ssuId: string }) {
     setError(null);
     try {
       const tx = buildAcceptJobTx(job.objectId);
-      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      console.log("[FrontierOps] Accept job tx:", result);
+      await dAppKit.signAndExecuteTransaction({ transaction: tx });
       setError(null);
       // Wait for indexer to catch up, then refresh
       invalidateJobCache();
@@ -905,8 +890,7 @@ function EmbeddedJobsBoard({ ssuId }: { ssuId: string }) {
 
     try {
       const tx = buildMarkCompleteTx(job.objectId);
-      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      console.log(`[FrontierOps] Mark complete tx${job.competitive ? " (competitive win!)" : ""}:`, result);
+      await dAppKit.signAndExecuteTransaction({ transaction: tx });
       invalidateJobCache();
       await new Promise((r) => setTimeout(r, 3000));
       invalidateJobCache();
@@ -957,8 +941,7 @@ function EmbeddedJobsBoard({ ssuId }: { ssuId: string }) {
 
     try {
       const tx = buildApproveAndPayTx(job.objectId);
-      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      console.log("[FrontierOps] Approve & pay tx:", result);
+      await dAppKit.signAndExecuteTransaction({ transaction: tx });
       invalidateJobCache();
       await new Promise((r) => setTimeout(r, 3000));
       invalidateJobCache();
@@ -1840,8 +1823,7 @@ export function AuthorizeExtensionButton({
       });
 
       setStatus("signing");
-      const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      console.log("[FrontierOps] Extension authorized:", result);
+      await dAppKit.signAndExecuteTransaction({ transaction: tx });
       setStatus("done");
     } catch (e: any) {
       console.error("[FrontierOps] Authorize extension failed:", e);

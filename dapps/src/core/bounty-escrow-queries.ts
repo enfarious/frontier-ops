@@ -93,7 +93,6 @@ export async function fetchOnChainBounties(): Promise<OnChainBounty[]> {
     });
 
     cache = { bounties, fetchedAt: Date.now() };
-    console.log(`[BountyEscrow] Fetched ${bounties.length} on-chain bounties`);
     return bounties;
   } catch (err) {
     console.error("[BountyEscrow] Failed to fetch on-chain bounties:", err);

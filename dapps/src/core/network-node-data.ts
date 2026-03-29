@@ -106,7 +106,6 @@ export async function fetchCharacterNetworkNodes(walletAddress: string): Promise
   const cacheKey = `network-nodes:${walletAddress}`;
   const cached = await getFromCache<NetworkNodeData[]>(cacheKey, TTL.ASSEMBLIES);
   if (cached) {
-    console.log(`[FrontierOps] Network nodes loaded from cache: ${cached.length}`);
     return cached;
   }
 

@@ -17,10 +17,13 @@ import {
   loadLLMConfig,
   saveLLMConfig,
   testConnection,
+  estimateTokens,
+  trimHistory,
   type ChatMessage,
   type LLMConfig,
   type ModelInfo,
 } from "./llm-client";
+import { getSolarSystemMap } from "../../core/world-api";
 import { MISSION_CONTROL_TOOLS, buildSystemPrompt } from "./tools";
 import {
   executeTool,
@@ -29,6 +32,8 @@ import {
   type PendingAction,
 } from "./tool-executor";
 import { useCurrentAccount } from "@mysten/dapp-kit-react";
+import { useAssemblyActions } from "../../core/useAssemblyActions";
+import { ensureCharacterId, invalidateAssemblyCache, fetchAssembliesForWallet } from "../../core/useCharacterAssemblies";
 
 /** Displayed message in the chat UI */
 interface DisplayMessage {
@@ -38,6 +43,7 @@ interface DisplayMessage {
   pending?: boolean;
   pendingAction?: PendingAction;
   actionExecuted?: boolean;
+  toolName?: string;
 }
 
 const CHAT_HISTORY_KEY = "frontier-ops-mission-control-chat";
@@ -64,9 +70,12 @@ function loadPersistedHistory(): ChatMessage[] {
 
 export default function MissionControlPage() {
   const account = useCurrentAccount();
+  const assemblyActions = useAssemblyActions();
   const [messages, setMessages] = useState<DisplayMessage[]>(loadPersistedMessages);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
+  const [actionPending, setActionPending] = useState(false);
+  const [tokenEstimate, setTokenEstimate] = useState(0);
   const [config, setConfig] = useState<LLMConfig>(loadLLMConfig);
   const [connectionStatus, setConnectionStatus] = useState<"unknown" | "ok" | "error">("unknown");
   const [availableModels, setAvailableModels] = useState<string[]>([]);
@@ -97,7 +106,7 @@ export default function MissionControlPage() {
   }, [messages]);
 
   // Build tool executor context from app state
-  const buildContext = useCallback((): ToolExecutorContext => {
+  const buildContext = useCallback(async (): Promise<ToolExecutorContext> => {
     // Load assemblies from localStorage cache
     const assemblies: AssemblyData[] = [];
 
@@ -109,16 +118,37 @@ export default function MissionControlPage() {
         for (const a of data) {
           assemblies.push({
             id: a.id,
-            itemId: a.itemId ?? String(a.typeId),
+            itemId: a.id,  // Sui object ID — unique per assembly
             name: a.name ?? "",
             typeId: a.typeId,
             state: a.state,
             moveType: a.moveType ?? "",
+            ownerName: a.ownerName,
             ownerCapId: a.ownerCapId,
             energySourceId: a.energySourceId,
             fuel: a.fuel,
             energySource: a.energySource,
             connectedAssemblyIds: a.connectedAssemblyIds,
+          });
+        }
+      }
+    } catch {}
+
+    // Also include network nodes (skipped in main assembly fetch)
+    try {
+      const nn = localStorage.getItem("frontier-ops-network-nodes-cache");
+      if (nn) {
+        const nodes = JSON.parse(nn);
+        for (const n of nodes) {
+          assemblies.push({
+            id: n.id,
+            itemId: n.id,
+            name: `Network Node (${n.itemId})`,
+            typeId: 88092, // STILLNESS_TYPE_IDS.NETWORK_NODE
+            state: n.status ?? "unknown",
+            moveType: "network_node::NetworkNode",
+            ownerCapId: n.ownerCapId,
+            energySourceId: "",
           });
         }
       }
@@ -145,11 +175,144 @@ export default function MissionControlPage() {
       if (k) killmails = JSON.parse(k);
     } catch {}
 
-    // Solar systems (too large for full context, provide lookup map)
+    // Solar systems — loaded from IndexedDB cache (populated by starmap)
     const solarSystems = new Map<number, { id: number; name: string; x: number; y: number; z: number }>();
+    try {
+      const sys = await getSolarSystemMap();
+      sys.forEach((s, id) => {
+        solarSystems.set(id, { id: s.id, name: s.name, x: s.location.x, y: s.location.y, z: s.location.z });
+      });
+    } catch {}
 
     return { assemblies, walletAddress: account?.address, contacts, roles, killmails, solarSystems };
   }, [account]);
+
+  /** Push a message into chat history and get an LLM response (with full agentic tool loop). */
+  const runLLMResponse = useCallback(async (userContent: string) => {
+    if (isStreaming) return;
+    chatHistory.current.push({ role: "user", content: userContent });
+    const historyBudget = (config.contextLength ?? 8192) - (config.maxTokens ?? 2048) - 500;
+    chatHistory.current = trimHistory(chatHistory.current, Math.max(historyBudget, 2000));
+    setTokenEstimate(estimateTokens(chatHistory.current));
+    setIsStreaming(true);
+
+    const ctx = await buildContext();
+    const replyId = `assistant-${Date.now()}`;
+    setMessages(prev => [...prev, { id: replyId, role: "assistant", content: "", pending: true }]);
+
+    // Recursive agentic loop: keep calling LLM until it returns a plain text response
+    const runLoop = async (displayMsgId: string): Promise<void> => {
+      const msg = await new Promise<ChatMessage>((resolve, reject) => {
+        chatCompletion(
+          chatHistory.current,
+          MISSION_CONTROL_TOOLS,
+          {
+            onToken: (token) => {
+              setMessages(prev => prev.map(m =>
+                m.id === displayMsgId ? { ...m, content: m.content + token } : m,
+              ));
+            },
+            onToolCall: () => {},
+            onDone: resolve,
+            onError: (err) => reject(new Error(err)),
+          },
+          config,
+        );
+      });
+
+      chatHistory.current.push(msg);
+
+      if (msg.tool_calls && msg.tool_calls.length > 0) {
+        setMessages(prev => prev.map(m => m.id === displayMsgId ? { ...m, pending: false } : m));
+
+        for (const tc of msg.tool_calls) {
+          const { result, pendingAction } = await executeTool(tc, ctx);
+          const toolMsgId = `tool-${Date.now()}-${tc.id}`;
+          setMessages(prev => [...prev, {
+            id: toolMsgId,
+            role: "tool-result" as const,
+            content: result,
+            pendingAction,
+            toolName: tc.function.name,
+          }]);
+          chatHistory.current.push({
+            role: "tool",
+            content: result,
+            tool_call_id: tc.id,
+            name: tc.function.name,
+          });
+        }
+
+        const nextMsgId = `assistant-${Date.now()}-cont`;
+        setMessages(prev => [...prev, { id: nextMsgId, role: "assistant", content: "", pending: true }]);
+        await runLoop(nextMsgId);
+      } else {
+        setMessages(prev => prev.map(m => m.id === displayMsgId ? { ...m, pending: false } : m));
+      }
+    };
+
+    try {
+      await runLoop(replyId);
+    } catch (err) {
+      setMessages(prev => prev.map(m =>
+        m.id === replyId ? { ...m, content: `Error: ${err instanceof Error ? err.message : String(err)}`, pending: false } : m,
+      ));
+    }
+
+    setIsStreaming(false);
+  }, [isStreaming, config, buildContext]);
+
+  const handleConfirmAction = useCallback(async (msgId: string, action: PendingAction) => {
+    setActionPending(true);
+    try {
+      // Ensure character ID is in localStorage before any action
+      if (account?.address) await ensureCharacterId(account.address);
+
+      const p = action.params as Record<string, string>;
+      const info = {
+        id: p.objectId,
+        ownerCapId: p.ownerCapId,
+        assemblyModule: p.assemblyModule,
+        assemblyTypeName: p.assemblyTypeName,
+        energySourceId: p.energySourceId,
+      };
+
+      if (action.type === "rename") {
+        await assemblyActions.rename(info, p.newName);
+      } else if (action.type === "power") {
+        if (p.action === "online") await assemblyActions.bringOnline(info);
+        else await assemblyActions.bringOffline(info);
+      }
+
+      // Bust assembly cache and immediately re-fetch so next tool call gets fresh state
+      if (account?.address) {
+        await invalidateAssemblyCache(account.address);
+        await fetchAssembliesForWallet(account.address);
+      }
+
+      // Mark action as executed
+      setMessages(prev => prev.map(m =>
+        m.id === msgId ? { ...m, actionExecuted: true } : m,
+      ));
+
+      // Inform the LLM and get a follow-up response
+      await runLLMResponse(`Action confirmed and executed: ${action.description}. Transaction submitted successfully. Please re-check and report the updated status.`);
+    } catch (e: any) {
+      setMessages(prev => prev.map(m =>
+        m.id === msgId ? { ...m, actionExecuted: true } : m,
+      ));
+      await runLLMResponse(`Action failed: ${e?.message ?? "unknown error"}. The transaction did not go through.`);
+    } finally {
+      setActionPending(false);
+    }
+  }, [assemblyActions, account, runLLMResponse]);
+
+  const handleCancelAction = useCallback(async (msgId: string) => {
+    setMessages(prev => prev.map(m =>
+      m.id === msgId ? { ...m, actionExecuted: true } : m,
+    ));
+    await runLLMResponse("Action cancelled by operator. No transaction was submitted.");
+  }, [runLLMResponse]);
 
   const sendMessage = useCallback(async () => {
     const text = input.trim();
@@ -164,11 +327,11 @@ export default function MissionControlPage() {
     // Add to chat history
     if (chatHistory.current.length === 0) {
       // Add system prompt on first message
-      const ctx = buildContext();
+      const ctx = await buildContext();
       chatHistory.current.push({
         role: "system",
         content: buildSystemPrompt({
-          characterName: "Enfarious Krividus", // TODO: get from app state
+          characterName: ctx.assemblies[0]?.ownerName ?? "Operator",
           tribeId: 1000167,
           walletAddress: account?.address,
           assemblyCount: ctx.assemblies.length,
@@ -176,6 +339,9 @@ export default function MissionControlPage() {
       });
     }
     chatHistory.current.push({ role: "user", content: text });
+    const historyBudget = (config.contextLength ?? 8192) - (config.maxTokens ?? 2048) - 500;
+    chatHistory.current = trimHistory(chatHistory.current, Math.max(historyBudget, 2000));
+    setTokenEstimate(estimateTokens(chatHistory.current));
 
     setIsStreaming(true);
 
@@ -186,135 +352,67 @@ export default function MissionControlPage() {
       { id: assistantMsgId, role: "assistant", content: "", pending: true },
     ]);
 
-    const processResponse = async () => {
-      const ctx = buildContext();
+    const ctx = await buildContext();
 
-      await new Promise<void>((resolve) => {
+    // Recursive agentic loop: keep calling LLM until it returns a plain text response
+    const runLoop = async (displayMsgId: string): Promise<void> => {
+      const msg = await new Promise<ChatMessage>((resolve, reject) => {
         chatCompletion(
           chatHistory.current,
           MISSION_CONTROL_TOOLS,
           {
             onToken: (token) => {
-              setMessages(prev =>
-                prev.map(m =>
-                  m.id === assistantMsgId
-                    ? { ...m, content: m.content + token }
-                    : m,
-                ),
-              );
+              setMessages(prev => prev.map(m =>
+                m.id === displayMsgId ? { ...m, content: m.content + token } : m,
+              ));
             },
-            onToolCall: (_tc) => {
-              // Tool calls are handled in onDone
-            },
-            onDone: async (fullMsg) => {
-              // Add assistant message to history
-              chatHistory.current.push(fullMsg);
-
-              if (fullMsg.tool_calls && fullMsg.tool_calls.length > 0) {
-                // Execute tool calls
-                for (const tc of fullMsg.tool_calls) {
-                  const { result, pendingAction } = await executeTool(tc, ctx);
-
-                  // Add tool result to display
-                  const toolMsgId = `tool-${Date.now()}-${tc.id}`;
-                  setMessages(prev => {
-                    // Update assistant message to remove pending
-                    const updated = prev.map(m =>
-                      m.id === assistantMsgId ? { ...m, pending: false } : m,
-                    );
-                    return [
-                      ...updated,
-                      {
-                        id: toolMsgId,
-                        role: "tool-result" as const,
-                        content: result,
-                        pendingAction,
-                      },
-                    ];
-                  });
-
-                  // Add tool result to chat history
-                  chatHistory.current.push({
-                    role: "tool",
-                    content: result,
-                    tool_call_id: tc.id,
-                    name: tc.function.name,
-                  });
-                }
-
-                // Continue the conversation — let the LLM respond to tool results
-                const continueMsgId = `assistant-${Date.now()}-cont`;
-                setMessages(prev => [
-                  ...prev,
-                  { id: continueMsgId, role: "assistant", content: "", pending: true },
-                ]);
-
-                await new Promise<void>((resolveInner) => {
-                  chatCompletion(
-                    chatHistory.current,
-                    MISSION_CONTROL_TOOLS,
-                    {
-                      onToken: (token) => {
-                        setMessages(prev =>
-                          prev.map(m =>
-                            m.id === continueMsgId
-                              ? { ...m, content: m.content + token }
-                              : m,
-                          ),
-                        );
-                      },
-                      onToolCall: () => {},
-                      onDone: (contMsg) => {
-                        chatHistory.current.push(contMsg);
-                        setMessages(prev =>
-                          prev.map(m =>
-                            m.id === continueMsgId ? { ...m, pending: false } : m,
-                          ),
-                        );
-                        resolveInner();
-                      },
-                      onError: (err) => {
-                        setMessages(prev =>
-                          prev.map(m =>
-                            m.id === continueMsgId
-                              ? { ...m, content: `Error: ${err}`, pending: false }
-                              : m,
-                          ),
-                        );
-                        resolveInner();
-                      },
-                    },
-                    config,
-                  );
-                });
-              } else {
-                // No tool calls — just update the message
-                setMessages(prev =>
-                  prev.map(m =>
-                    m.id === assistantMsgId ? { ...m, pending: false } : m,
-                  ),
-                );
-              }
-
-              resolve();
-            },
-            onError: (err) => {
-              setMessages(prev =>
-                prev.map(m =>
-                  m.id === assistantMsgId
-                    ? { ...m, content: `Error: ${err}`, pending: false }
-                    : m,
-                ),
-              );
-              resolve();
-            },
+            onToolCall: () => {},
+            onDone: resolve,
+            onError: (err) => reject(new Error(err)),
           },
           config,
         );
       });
+
+      chatHistory.current.push(msg);
+
+      if (msg.tool_calls && msg.tool_calls.length > 0) {
+        setMessages(prev => prev.map(m => m.id === displayMsgId ? { ...m, pending: false } : m));
+
+        for (const tc of msg.tool_calls) {
+          const { result, pendingAction } = await executeTool(tc, ctx);
+          const toolMsgId = `tool-${Date.now()}-${tc.id}`;
+          setMessages(prev => [...prev, {
+            id: toolMsgId,
+            role: "tool-result" as const,
+            content: result,
+            pendingAction,
+            toolName: tc.function.name,
+          }]);
+          chatHistory.current.push({
+            role: "tool",
+            content: result,
+            tool_call_id: tc.id,
+            name: tc.function.name,
+          });
+        }
+
+        const nextMsgId = `assistant-${Date.now()}-cont`;
+        setMessages(prev => [...prev, { id: nextMsgId, role: "assistant", content: "", pending: true }]);
+        await runLoop(nextMsgId);
+      } else {
+        setMessages(prev => prev.map(m => m.id === displayMsgId ? { ...m, pending: false } : m));
+      }
     };
 
-    await processResponse();
+    try {
+      await runLoop(assistantMsgId);
+    } catch (err) {
+      setMessages(prev => prev.map(m =>
+        m.id === assistantMsgId ? { ...m, content: `Error: ${err instanceof Error ? err.message : String(err)}`, pending: false } : m,
+      ));
+    }
+
     setIsStreaming(false);
   }, [input, isStreaming, config, account, buildContext]);
 
@@ -331,7 +429,13 @@ export default function MissionControlPage() {
     const result = await testConnection(config);
     setConnectionStatus(result.ok ? "ok" : "error");
     if (result.models) setAvailableModels(result.models);
-    if (result.modelDetails) setModelDetails(result.modelDetails);
+    if (result.modelDetails) {
+      setModelDetails(result.modelDetails);
+      // Auto-populate context length from the loaded model
+      const active = result.modelDetails.find(d => d.id === config.model);
+      const ctx = active?.loadedContextLength ?? active?.contextLength;
+      if (ctx) setConfig(c => ({ ...c, contextLength: ctx }));
+    }
   };
 
   const handleSaveConfig = () => {
@@ -360,13 +464,19 @@ export default function MissionControlPage() {
             {connectionStatus === "ok" ? "ONLINE" : connectionStatus === "error" ? "OFFLINE" : "STANDBY"}
           </Badge>
         </Flex>
-        <Flex gap="1">
+        <Flex gap="1" align="center">
+        {tokenEstimate > 0 && (
+          <Text size="1" color={tokenEstimate > 6000 ? "orange" : "gray"} style={{ fontFamily: "monospace" }}>
+            ~{tokenEstimate.toLocaleString()}tok
+          </Text>
+        )}
         <IconButton
           size="1"
           variant="ghost"
           onClick={() => {
             setMessages([{ id: "welcome", role: "system", content: "Mission Control online. How can I help, Commander?" }]);
             chatHistory.current = [];
+            setTokenEstimate(0);
             localStorage.removeItem(CHAT_HISTORY_KEY);
             localStorage.removeItem(CHAT_MESSAGES_KEY);
           }}
@@ -396,7 +506,13 @@ export default function MissionControlPage() {
       >
         <Flex direction="column" gap="2">
           {messages.map(msg => (
-            <MessageBubble key={msg.id} message={msg} />
+            <MessageBubble
+              key={msg.id}
+              message={msg}
+              onConfirm={handleConfirmAction}
+              onCancel={handleCancelAction}
+              actionPending={actionPending}
+            />
           ))}
         </Flex>
       </ScrollArea>
@@ -409,6 +525,8 @@ export default function MissionControlPage() {
       >
         <TextField.Root
           ref={inputRef}
+          type="text"
+          autoComplete="off"
           placeholder={isStreaming ? "Waiting for response..." : "Talk to Mission Control..."}
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -512,14 +630,25 @@ export default function MissionControlPage() {
               />
             </label>
 
-            <label>
-              <Text size="2" weight="bold" mb="1">Max Tokens</Text>
-              <TextField.Root
-                type="number"
-                value={String(config.maxTokens)}
-                onChange={(e) => setConfig(c => ({ ...c, maxTokens: parseInt(e.target.value) || 2048 }))}
-              />
-            </label>
+            <Flex gap="3">
+              <label style={{ flex: 1 }}>
+                <Text size="2" weight="bold" mb="1">Max Output Tokens</Text>
+                <TextField.Root
+                  type="number"
+                  value={String(config.maxTokens)}
+                  onChange={(e) => setConfig(c => ({ ...c, maxTokens: parseInt(e.target.value) || 2048 }))}
+                />
+              </label>
+              <label style={{ flex: 1 }}>
+                <Text size="2" weight="bold" mb="1">Context Window</Text>
+                <TextField.Root
+                  type="number"
+                  value={String(config.contextLength ?? 8192)}
+                  onChange={(e) => setConfig(c => ({ ...c, contextLength: parseInt(e.target.value) || 8192 }))}
+                  placeholder="e.g. 30000"
+                />
+              </label>
+            </Flex>
 
             <Separator size="4" />
 
@@ -635,7 +764,17 @@ function ThinkingBlock({ content, isStreaming }: { content: string; isStreaming?
 }
 
 /** Collapsible tool result */
-function ToolResultBlock({ message }: { message: DisplayMessage }) {
+function ToolResultBlock({
+  message,
+  onConfirm,
+  onCancel,
+  actionPending,
+}: {
+  message: DisplayMessage;
+  onConfirm: (msgId: string, action: PendingAction) => void;
+  onCancel: (msgId: string) => void;
+  actionPending: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const toolName = message.content.split("\n")[0] ?? "Tool result";
   const lineCount = message.content.split("\n").length;
@@ -655,7 +794,7 @@ function ToolResultBlock({ message }: { message: DisplayMessage }) {
         <Text size="1" style={{ opacity: 0.6, transform: open ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>
           ▶
         </Text>
-        <Badge size="1" color="blue" variant="soft">Tool Result</Badge>
+        <Badge size="1" color="blue" variant="soft">{message.toolName ?? "tool"}</Badge>
         {!open && (
           <Text size="1" color="gray" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
             {toolName.slice(0, 60)} ({lineCount} lines)
@@ -673,8 +812,26 @@ function ToolResultBlock({ message }: { message: DisplayMessage }) {
         </Text>
       )}
       {message.pendingAction && !message.actionExecuted && (
-        <Flex gap="2" mt="2">
-          <Badge color="orange" size="1">Action pending — confirm in chat</Badge>
+        <Flex gap="2" mt="2" onClick={(e) => e.stopPropagation()}>
+          <Text size="1" color="orange" weight="bold">{message.pendingAction.description}</Text>
+          <Button
+            size="1"
+            color="green"
+            variant="soft"
+            disabled={actionPending}
+            onClick={() => onConfirm(message.id, message.pendingAction!)}
+          >
+            {actionPending ? "Executing..." : "Confirm"}
+          </Button>
+          <Button
+            size="1"
+            color="gray"
+            variant="soft"
+            disabled={actionPending}
+            onClick={() => onCancel(message.id)}
+          >
+            Cancel
+          </Button>
         </Flex>
       )}
     </Card>
@@ -682,13 +839,23 @@ function ToolResultBlock({ message }: { message: DisplayMessage }) {
 }
 
 /** Individual message bubble */
-function MessageBubble({ message }: { message: DisplayMessage }) {
+function MessageBubble({
+  message,
+  onConfirm,
+  onCancel,
+  actionPending,
+}: {
+  message: DisplayMessage;
+  onConfirm: (msgId: string, action: PendingAction) => void;
+  onCancel: (msgId: string) => void;
+  actionPending: boolean;
+}) {
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
   const isToolResult = message.role === "tool-result";
 
   if (isToolResult) {
-    return <ToolResultBlock message={message} />;
+    return <ToolResultBlock message={message} onConfirm={onConfirm} onCancel={onCancel} actionPending={actionPending} />;
   }
 
   if (isSystem) {

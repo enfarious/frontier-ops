@@ -214,7 +214,6 @@ async function initDatabase(): Promise<Database> {
   try { database.run("ALTER TABLE asset_sightings ADD COLUMN lpoint INTEGER"); } catch { /* column already exists */ }
   try { database.run("ALTER TABLE intel_packages ADD COLUMN on_chain_id TEXT"); } catch { /* column already exists */ }
 
-  console.log("[FrontierOps] SQLite database ready");
   return database;
 }
 
@@ -346,7 +345,6 @@ export async function importDatabase(file: File): Promise<void> {
 
   await saveToIDB(data);
   notifyListeners();
-  console.log("[FrontierOps] Database imported successfully");
 }
 
 // ─── Migration from localStorage ────────────────────────────────────
@@ -361,7 +359,6 @@ export async function migrateFromLocalStorage(): Promise<void> {
   );
   if (result.length > 0 && result[0].values.length > 0) return;
 
-  console.log("[FrontierOps] Migrating localStorage to SQLite...");
 
   let migrated = 0;
 
@@ -511,5 +508,4 @@ export async function migrateFromLocalStorage(): Promise<void> {
   );
 
   await saveDatabase();
-  console.log(`[FrontierOps] Migration complete: ${migrated} records moved to SQLite`);
 }

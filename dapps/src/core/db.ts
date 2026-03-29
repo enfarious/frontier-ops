@@ -285,7 +285,7 @@ export async function migrateFromLocalStorage(): Promise<void> {
   const migrated = await settingsGet<boolean>("migrated-from-localstorage");
   if (migrated) return;
 
-  console.log("[FrontierOps] Migrating localStorage → IndexedDB...");
+
 
   // Migrate cache entries
   const cachePrefix = "frontier-ops:cache:";
@@ -339,5 +339,4 @@ export async function migrateFromLocalStorage(): Promise<void> {
     try { localStorage.removeItem(key); } catch {}
   }
 
-  console.log(`[FrontierOps] Migration complete — moved ${keysToRemove.length} entries`);
 }

@@ -91,7 +91,6 @@ function fetchCharacterMap() {
     const cached = await getFromCache<CharacterMapData>("character-map", TTL.CHARACTERS);
     if (cached) {
       const map = new Map<string, CharacterInfo>(cached);
-      console.log(`[FrontierOps] Character map loaded from cache: ${map.size} characters`);
       return map;
     }
 
@@ -119,8 +118,6 @@ function fetchCharacterMap() {
         hasMore = result.data?.objects?.pageInfo?.hasNextPage ?? false;
         cursor = result.data?.objects?.pageInfo?.endCursor ?? null;
       }
-      console.log(`[FrontierOps] Fetched ${map.size} characters from chain, caching`);
-
       // Cache to IndexedDB
       await setCache("character-map", Array.from(map.entries()));
     } catch (err) {
@@ -212,7 +209,6 @@ export function useKillmails() {
       const cacheKey = `killmails:${pageCount}`;
       const cached = await getFromCache<{ killmails: KillmailData[]; hasMore: boolean; nextCursor: string | null }>(cacheKey, TTL.KILLMAILS);
       if (cached) {
-        console.log(`[FrontierOps] Killmails loaded from cache: ${cached.killmails.length} entries`);
         return cached;
       }
 
@@ -248,8 +244,6 @@ export function useKillmails() {
         }));
         localStorage.setItem("frontier-ops-killmails-cache", JSON.stringify(forLLM));
       } catch {}
-
-      console.log(`[FrontierOps] Fetched ${allKillmails.length} killmails (${pageCount} pages)`);
 
       return result;
     },

@@ -75,7 +75,7 @@ export function BountyList({ bounties, selectedId, onSelect }: BountyListProps) 
               >
                 <Table.Cell>
                   <Flex align="center" gap="2">
-                    <Text size="2" weight="bold" truncate style={{ maxWidth: 160 }}>
+                    <Text size="2" weight="bold" truncate style={{ maxWidth: 220 }}>
                       {bounty.title || bounty.target || "(untitled)"}
                     </Text>
                     {bounty.matchedKillmailId && bounty.status === 0 && (

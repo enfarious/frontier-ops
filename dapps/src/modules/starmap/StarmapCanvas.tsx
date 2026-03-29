@@ -55,11 +55,10 @@ function normalizePositions(systems: Map<number, SolarSystem>) {
   const positions = new Map<number, THREE.Vector3>();
 
   for (const [id, sys] of systems) {
-    // Negate X to match EVE Frontier's coordinate handedness
     positions.set(id, new THREE.Vector3(
-      -((sys.location.x - (minX + maxX) / 2) * scale),
-      (sys.location.y - (minY + maxY) / 2) * scale,
-      (sys.location.z - (minZ + maxZ) / 2) * scale,
+       (sys.location.x - (minX + maxX) / 2) * scale,
+      -((sys.location.y - (minY + maxY) / 2) * scale),
+      -((sys.location.z - (minZ + maxZ) / 2) * scale),
     ));
   }
 
@@ -75,6 +74,7 @@ function StarField({
   onSelectSystem,
   onHoverSystem,
   controlsRef,
+  gatedSystems,
 }: {
   systems: Map<number, SolarSystem>;
   positions: Map<number, THREE.Vector3>;
@@ -83,6 +83,7 @@ function StarField({
   onSelectSystem: (id: number | null, pos?: { x: number; y: number }) => void;
   onHoverSystem: (id: number | null) => void;
   controlsRef: React.RefObject<any>;
+  gatedSystems: Set<number>;
 }) {
   const pointsRef = useRef<THREE.Points>(null);
   const { camera, raycaster, pointer, gl } = useThree();
@@ -151,6 +152,7 @@ function StarField({
       posArr[i * 3 + 2] = pos.z;
 
       const lastKill = killHeat.get(id);
+      const isGated = gatedSystems.size === 0 || gatedSystems.has(id);
       const color = new THREE.Color();
       let size = 1.2;
 
@@ -182,10 +184,14 @@ function StarField({
           color.setRGB(0.4, 0.45, 0.7);
           size = 1.3;
         }
+      } else if (isGated) {
+        // Gated system — visible white-blue star
+        color.setRGB(0.55, 0.65, 0.9);
+        size = 1.5;
       } else {
-        // No kills ever — cool blue-white star
-        color.setRGB(0.35, 0.4, 0.65);
-        size = 1.2;
+        // Background star (no gate) — very dim, almost invisible
+        color.setRGB(0.06, 0.06, 0.1);
+        size = 0.4;
       }
 
       colorArr[i * 3] = color.r;
@@ -203,7 +209,7 @@ function StarField({
     geo.setAttribute("size", new THREE.BufferAttribute(sizeArr, 1));
 
     return { geometry: geo, idArray: ids };
-  }, [systems, positions, killHeat]);
+  }, [systems, positions, killHeat, gatedSystems]);
 
   // Raycasting for hover
   const hoveredRef = useRef<number | null>(null);
@@ -408,16 +414,24 @@ function TravelLines({
 /** Static gate network — renders all stargate connections as dim lines */
 function GateNetwork({
   positions,
+  onGatedSystems,
 }: {
   positions: Map<number, THREE.Vector3>;
+  onGatedSystems?: (ids: Set<number>) => void;
 }) {
   const [connections, setConnections] = useState<Array<{ from: number; to: number }>>([]);
 
   useEffect(() => {
     import("./data/gate-connections.json").then((mod) => {
-      setConnections(mod.default as Array<{ from: number; to: number }>);
+      const conns = mod.default as Array<{ from: number; to: number }>;
+      setConnections(conns);
+      if (onGatedSystems) {
+        const ids = new Set<number>();
+        for (const c of conns) { ids.add(c.from); ids.add(c.to); }
+        onGatedSystems(ids);
+      }
     });
-  }, []);
+  }, [onGatedSystems]);
 
   const geometry = useMemo(() => {
     if (connections.length === 0 || positions.size === 0) return null;
@@ -435,8 +449,6 @@ function GateNetwork({
       points.push(to.x, to.y, to.z);
       count++;
     }
-
-    console.log(`[Starmap] Gate network: ${count} lines rendered, ${missed} missed (${connections.length} total connections, ${positions.size} positions)`);
 
     if (count === 0) return null;
 
@@ -509,6 +521,7 @@ export const StarmapCanvas = forwardRef<StarmapCanvasHandle, StarmapCanvasProps>
     heatmapEnabled = true,
   }, ref) {
     const positions = useMemo(() => normalizePositions(systems), [systems]);
+    const [gatedSystems, setGatedSystems] = useState<Set<number>>(new Set());
 
     // Expose navigateTo — move camera to look at a specific system
     const cameraRef = useRef<THREE.Camera | null>(null);
@@ -552,7 +565,7 @@ export const StarmapCanvas = forwardRef<StarmapCanvasHandle, StarmapCanvasProps>
             maxDistance={2000}
           />
 
-          <GateNetwork positions={positions} />
+          <GateNetwork positions={positions} onGatedSystems={setGatedSystems} />
 
           {heatmapEnabled && killmails && killmails.length > 0 && (
             <HeatmapLayer
@@ -571,6 +584,7 @@ export const StarmapCanvas = forwardRef<StarmapCanvasHandle, StarmapCanvasProps>
             onSelectSystem={onSelectSystem}
             onHoverSystem={onHoverSystem}
             controlsRef={controlsRef}
+            gatedSystems={gatedSystems}
           />
 
           <TravelLines routes={jumpRoutes} positions={positions} />
