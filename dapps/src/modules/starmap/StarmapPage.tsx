@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Flex, Heading, Spinner, Text, TextField } from "@radix-ui/themes";
 import { useStarmapData } from "./hooks/useStarmapData";
 import { useJumpHistory } from "./hooks/useGateLinks";
+import { useKillmails } from "../danger-alerts/hooks/useKillmails";
 import { StarmapCanvas, type StarmapCanvasHandle } from "./StarmapCanvas";
 import { SystemInfoPanel } from "./SystemInfoPanel";
+import { TimeSlider } from "./TimeSlider";
 
 const HOME_SYSTEM_KEY = "frontier-ops:home-system";
 
@@ -16,6 +18,7 @@ function getSavedHomeSystem(): number | null {
 
 export default function StarmapPage() {
   const { systems, coords, killHeat, isLoading, error } = useStarmapData();
+  const { data: killmails } = useKillmails();
   // Jump history requires auth — pass null until we have token infrastructure
   const { routes: jumpRoutes } = useJumpHistory(null);
   const [selectedSystem, setSelectedSystem] = useState<number | null>(null);
@@ -27,6 +30,50 @@ export default function StarmapPage() {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(800);
   const [containerHeight, setContainerHeight] = useState(600);
+
+  // Heatmap state
+  const [heatmapCurrentTime, setHeatmapCurrentTime] = useState(Date.now());
+  const [heatmapWindowDuration, setHeatmapWindowDuration] = useState(24 * 3600_000);
+  const [heatmapPlaying, setHeatmapPlaying] = useState(false);
+  const [heatmapSpeed, setHeatmapSpeed] = useState(1);
+  const [heatmapEnabled] = useState(true);
+
+  // Time range from killmail data
+  const DAY_MS = 86400_000;
+  const timeRange = useMemo(() => {
+    if (!killmails?.length) return { min: Date.now() - 7 * DAY_MS, max: Date.now() };
+    const timestamps = killmails.map((k) => k.killTimestamp);
+    return { min: Math.min(...timestamps), max: Date.now() };
+  }, [killmails]);
+
+  // Playback animation loop
+  const lastFrameRef = useRef(0);
+  useEffect(() => {
+    if (!heatmapPlaying) return;
+    lastFrameRef.current = performance.now();
+
+    let rafId: number;
+    function tick(now: number) {
+      const dt = (now - lastFrameRef.current) / 1000; // seconds
+      lastFrameRef.current = now;
+
+      // 1 real second = 1 game hour at 1x speed
+      const advance = dt * heatmapSpeed * 3600_000;
+
+      setHeatmapCurrentTime((prev) => {
+        const next = prev + advance;
+        if (next >= Date.now()) {
+          setHeatmapPlaying(false);
+          return Date.now();
+        }
+        return next;
+      });
+
+      rafId = requestAnimationFrame(tick);
+    }
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [heatmapPlaying, heatmapSpeed]);
 
   useEffect(() => {
     const el = mapContainerRef.current;
@@ -182,6 +229,10 @@ export default function StarmapPage() {
           }}
           onHoverSystem={setHoveredSystem}
           onReady={handleCanvasReady}
+          killmails={killmails}
+          heatmapCurrentTime={heatmapCurrentTime}
+          heatmapWindowDuration={heatmapWindowDuration}
+          heatmapEnabled={heatmapEnabled}
         />
 
         {/* Floating info overlay */}
@@ -206,6 +257,20 @@ export default function StarmapPage() {
           </Box>
         )}
       </Box>
+
+      {/* Heatmap time controls */}
+      <TimeSlider
+        minTime={timeRange.min}
+        maxTime={timeRange.max}
+        currentTime={heatmapCurrentTime}
+        onCurrentTimeChange={setHeatmapCurrentTime}
+        windowDuration={heatmapWindowDuration}
+        onWindowDurationChange={setHeatmapWindowDuration}
+        isPlaying={heatmapPlaying}
+        onPlayPauseToggle={() => setHeatmapPlaying((p) => !p)}
+        playbackSpeed={heatmapSpeed}
+        onPlaybackSpeedChange={setHeatmapSpeed}
+      />
     </Flex>
   );
 }

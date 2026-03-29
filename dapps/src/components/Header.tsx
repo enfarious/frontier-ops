@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Dialog, DropdownMenu, Flex, Heading, SegmentedControl, Text } from "@radix-ui/themes";
 import { abbreviateAddress } from "@evefrontier/dapp-kit";
 import {
@@ -6,18 +6,52 @@ import {
   useDAppKit,
   useWallets,
 } from "@mysten/dapp-kit-react";
-import { ExitIcon, GearIcon } from "@radix-ui/react-icons";
+import { ExitIcon, GearIcon, HomeIcon } from "@radix-ui/react-icons";
 import { useOperatingContext } from "../core/OperatingContext";
 import type { OperatingMode } from "../core/types";
 import { RoleManager } from "../core/components/RoleManager";
 
-export function Header() {
+const TAGLINES = [
+  "The Trinary Awaits",
+  "Trust No One. Sell to Everyone.",
+  "Intel Is Currency",
+  "Every Assembly Is a Storefront",
+  "Fly Dangerous. Spy Dangerously.",
+  "Your Mk.1 Eyeballs Are Your Best Sensor",
+  "Dead Drops, Not Dead Ends",
+  "Solo Operator. Maximum Leverage.",
+  "The Void Remembers Everything",
+  "Information Wants to Be Expensive",
+  "Scout. Package. Profit.",
+  "Eyes Everywhere. Loyalty Nowhere.",
+  "Gate Camps Are Just Market Research",
+  "Know the Space Before You Fly It",
+  "Espionage Is a Legitimate Career Path",
+  "Your Intel. Your Price. Your Rules.",
+];
+
+interface Props {
+  onShowLanding?: () => void;
+}
+
+export function Header({ onShowLanding }: Props) {
   const account = useCurrentAccount();
   const { connectWallet, disconnectWallet } = useDAppKit();
   const wallets = useWallets();
   const { mode, setMode, isOwner, checkPermission } = useOperatingContext();
   const [showWalletPicker, setShowWalletPicker] = useState(false);
   const [showTribeSettings, setShowTribeSettings] = useState(false);
+  const [tagline, setTagline] = useState(() =>
+    TAGLINES[Math.floor(Math.random() * TAGLINES.length)],
+  );
+
+  // Rotate tagline every 30s
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTagline(TAGLINES[Math.floor(Math.random() * TAGLINES.length)]);
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, []);
 
   const showTribeSettingsBtn =
     mode === "tribe" && account && (isOwner || checkPermission("manage_roles"));
@@ -49,7 +83,21 @@ export function Header() {
         borderBottom: "1px solid var(--color-border)",
       }}
     >
-      <Heading size="4">Frontier Ops</Heading>
+      <Flex align="center" gap="3">
+        {onShowLanding && (
+          <button
+            onClick={onShowLanding}
+            title="Home"
+            style={{ display: "flex", alignItems: "center", opacity: 0.6 }}
+          >
+            <HomeIcon width={16} height={16} />
+          </button>
+        )}
+        <Heading size="4">Frontier Ops</Heading>
+        <Text size="1" color="gray" style={{ fontStyle: "italic", opacity: 0.7 }}>
+          {tagline}
+        </Text>
+      </Flex>
 
       <Flex align="center" gap="4">
         {account && (

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Button, Dialog, Flex, Text, TextArea, TextField } from "@radix-ui/themes";
 import { useCurrentAccount } from "@mysten/dapp-kit-react";
 import { searchCharactersByName, type CharacterSearchResult } from "../../core/character-search";
+import { appendVisibility, type Visibility } from "../../core/visibility";
 
 interface BountyCreateDialogProps {
   open: boolean;
@@ -22,6 +23,7 @@ export function BountyCreateDialog({
   const [charSearch, setCharSearch] = useState("");
   const [charResults, setCharResults] = useState<CharacterSearchResult[]>([]);
   const [rewardSui, setRewardSui] = useState("");
+  const [visibility, setVisibility] = useState<Visibility>("public");
 
   useEffect(() => {
     if (charSearch.length < 2) { setCharResults([]); return; }
@@ -39,6 +41,7 @@ export function BountyCreateDialog({
     setCharSearch("");
     setCharResults([]);
     setRewardSui("");
+    setVisibility("public");
   }
 
   function handleCreate() {
@@ -48,7 +51,8 @@ export function BountyCreateDialog({
     const amount = parseFloat(rewardSui);
     if (isNaN(amount) || amount <= 0) return;
 
-    onCreate(title.trim(), description.trim(), targetStr, amount);
+    const fullDesc = appendVisibility(description.trim(), visibility);
+    onCreate(title.trim(), fullDesc, targetStr, amount);
     reset();
     onOpenChange(false);
   }
@@ -147,6 +151,46 @@ export function BountyCreateDialog({
             <Text size="1" color="blue">
               SUI will be escrowed on-chain. Released to the hunter when you approve their claim (2.5% platform fee).
             </Text>
+          </Flex>
+
+          {/* Visibility */}
+          <Flex direction="column" gap="1">
+            <Text size="1" color="gray">Visibility</Text>
+            <Flex gap="2">
+              {(["public", "tribe", "friends"] as const).map((v) => (
+                <Flex
+                  key={v}
+                  align="center"
+                  gap="1"
+                  onClick={() => setVisibility(v)}
+                  style={{ cursor: "pointer" }}
+                >
+                  <div style={{
+                    width: 14, height: 14, borderRadius: 3,
+                    border: `1px solid ${visibility === v ? "var(--accent-9)" : "var(--gray-7)"}`,
+                    background: visibility === v ? "var(--accent-9)" : "transparent",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                  }}>
+                    {visibility === v && (
+                      <Text size="1" style={{ color: "white", lineHeight: 1, fontSize: 9 }}>✓</Text>
+                    )}
+                  </div>
+                  <Text size="1" color={visibility === v ? undefined : "gray"}>
+                    {v === "public" ? "Public" : v === "tribe" ? "Tribe Only" : "Friends Only"}
+                  </Text>
+                </Flex>
+              ))}
+            </Flex>
+            {visibility === "friends" && (
+              <Text size="1" color="orange">
+                Hidden from casual view. Chain readers can still find it — intel is a weapon.
+              </Text>
+            )}
+            {visibility === "tribe" && (
+              <Text size="1" color="blue">
+                Only tribe members will see this in the UI.
+              </Text>
+            )}
           </Flex>
         </Flex>
 

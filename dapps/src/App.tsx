@@ -27,7 +27,7 @@ const LANDING_DISMISSED_KEY = "frontier-ops-landing-dismissed";
 
 function App() {
   const [activeModuleId, setActiveModuleId] = useState<string | null>(
-    "turret-control",
+    "mission-control",
   );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showLanding, setShowLanding] = useState(
@@ -55,7 +55,7 @@ function App() {
 
   return (
     <Flex direction="column" style={{ height: "100vh" }}>
-      <Header />
+      <Header onShowLanding={() => setShowLanding(true)} />
       <Flex style={{ flex: 1, overflow: "hidden" }}>
         <Sidebar
           activeModuleId={activeModuleId}

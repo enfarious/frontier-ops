@@ -104,7 +104,7 @@ export async function fetchNetworkNode(objectId: string): Promise<NetworkNodeDat
 export async function fetchCharacterNetworkNodes(walletAddress: string): Promise<NetworkNodeData[]> {
   // Check cache first (5 min TTL)
   const cacheKey = `network-nodes:${walletAddress}`;
-  const cached = getFromCache<NetworkNodeData[]>(cacheKey, TTL.ASSEMBLIES);
+  const cached = await getFromCache<NetworkNodeData[]>(cacheKey, TTL.ASSEMBLIES);
   if (cached) {
     console.log(`[FrontierOps] Network nodes loaded from cache: ${cached.length}`);
     return cached;
@@ -144,7 +144,7 @@ export async function fetchCharacterNetworkNodes(walletAddress: string): Promise
     }
 
     // Cache the results
-    setCache(cacheKey, nodes);
+    await setCache(cacheKey, nodes);
     return nodes;
   } catch {
     return [];

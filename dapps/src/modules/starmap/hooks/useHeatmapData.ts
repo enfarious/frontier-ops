@@ -1,0 +1,21 @@
+/**
+ * React hook wrapping the pure heatmap blob computation.
+ * Memoizes results — recomputes when killmails or time params change.
+ */
+
+import { useMemo } from "react";
+import * as THREE from "three";
+import type { KillmailData } from "../../danger-alerts/danger-types";
+import { computeHeatmapBlobs, type HeatmapBlobData } from "../helpers/violence-score";
+
+export function useHeatmapData(
+  killmails: KillmailData[] | undefined,
+  positions: Map<number, THREE.Vector3>,
+  currentTime: number,
+  windowDuration: number,
+): HeatmapBlobData[] {
+  return useMemo(
+    () => computeHeatmapBlobs(killmails ?? [], positions, currentTime, windowDuration),
+    [killmails, positions, currentTime, windowDuration],
+  );
+}

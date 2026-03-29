@@ -1,310 +1,505 @@
 /**
- * FrontierOps Landing Page — gravitational particle simulation.
+ * FrontierOps Landing Page — full 3D EVE Frontier starfield
+ * with three black holes (the Trinary) pulling stars inward.
  *
- * N-body system with glowing particles orbiting attractor points.
- * Mouse creates a gravity well. Particles leave fading trails.
- * Pure canvas, pure math, zero dependencies.
+ * Three.js Points cloud — GPU renders all 24,500+ stars in a single draw call.
+ * Physics runs on CPU in 3D, positions uploaded to GPU each frame.
  */
-import { useRef, useEffect, useCallback, useState } from "react";
+import { useRef, useEffect, useState, useMemo, useCallback } from "react";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { OrbitControls } from "@react-three/drei";
+import * as THREE from "three";
+import { getSolarSystemMap, type SolarSystem } from "../core/world-api";
 
 // ── Simulation constants ──────────────────────────────────────
-const PARTICLE_COUNT = 600;
-const ATTRACTOR_COUNT = 3;
-const G = 800;                  // gravitational constant
-const MOUSE_G = 2400;           // mouse gravity (stronger pull)
-const DAMPING = 0.998;          // velocity damping per frame
-const TRAIL_LENGTH = 12;
-const MAX_SPEED = 8;
-const SOFTENING = 40;           // prevent division by zero in gravity
-const SPAWN_VELOCITY = 1.5;
+const G = 600;
+const DAMPING = 0.997;
+const MAX_SPEED = 6;
+const SOFTENING = 50;
+const GRAVITY_RAMP_FRAMES = 180;
+const INITIAL_PAUSE_FRAMES = 90;
 
-// ── Color palette (EVE Frontier vibes) ────────────────────────
-const COLORS = [
-  [64, 180, 255],   // ice blue
-  [255, 140, 50],   // amber
-  [120, 255, 180],  // jade green
-  [200, 120, 255],  // violet
-  [255, 80, 80],    // danger red
-  [255, 220, 80],   // gold
-];
+// ── Star color from constellation — spectral classes ──────────
+function starColor(constellationId: number, systemId: number): [number, number, number] {
+  const hash = ((constellationId * 137.508) + (systemId * 0.618)) % 1;
+  const classHash = ((constellationId * 73.856) % 1 + (systemId * 0.0001)) % 1;
 
-interface Particle {
-  x: number; y: number;
-  vx: number; vy: number;
-  color: number[];
-  alpha: number;
-  size: number;
-  trail: { x: number; y: number }[];
+  if (classHash < 0.03) return [0.55 + hash * 0.23, 0.71 + hash * 0.16, 1.0];
+  if (classHash < 0.12) return [0.71 + hash * 0.16, 0.78 + hash * 0.12, 0.94 + hash * 0.06];
+  if (classHash < 0.25) return [0.94 + hash * 0.06, 0.90 + hash * 0.08, 0.78 + hash * 0.12];
+  if (classHash < 0.50) return [1.0, 0.86 + hash * 0.12, 0.47 + hash * 0.24];
+  if (classHash < 0.75) return [1.0, 0.63 + hash * 0.20, 0.24 + hash * 0.16];
+  return [1.0, 0.31 + hash * 0.24, 0.16 + hash * 0.12];
 }
 
-interface Attractor {
-  x: number; y: number;
+// ── Project solar systems to 3D coordinates ──────────────────
+interface StarData {
+  positions: Float32Array;  // x, y, z per star (true 3D)
+  colors: Float32Array;     // r, g, b per star
+  sizes: Float32Array;      // point size per star
+  velocities: Float32Array; // vx, vy, vz per star
+  count: number;
+  scale: number;            // world-unit scale factor
+}
+
+function projectSystems3D(systems: Map<number, SolarSystem>): StarData {
+  const entries = Array.from(systems.values());
+  const count = entries.length;
+
+  // Find bounds for normalization
+  let minX = Infinity, maxX = -Infinity;
+  let minY = Infinity, maxY = -Infinity;
+  let minZ = Infinity, maxZ = -Infinity;
+
+  for (const sys of entries) {
+    const { x, y, z } = sys.location;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z;
+    if (z > maxZ) maxZ = z;
+  }
+
+  const rangeX = maxX - minX || 1;
+  const rangeY = maxY - minY || 1;
+  const rangeZ = maxZ - minZ || 1;
+  const maxRange = Math.max(rangeX, rangeY, rangeZ);
+
+  // Scale to fit in a ~800 unit cube centered at origin
+  const scale = 800 / maxRange;
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const cz = (minZ + maxZ) / 2;
+
+  const positions = new Float32Array(count * 3);
+  const colors = new Float32Array(count * 3);
+  const sizes = new Float32Array(count);
+  const velocities = new Float32Array(count * 3);
+
+  for (let i = 0; i < count; i++) {
+    const sys = entries[i];
+    positions[i * 3] = (sys.location.x - cx) * scale;
+    positions[i * 3 + 1] = (sys.location.y - cy) * scale;
+    positions[i * 3 + 2] = (sys.location.z - cz) * scale;
+
+    const [r, g, b] = starColor(sys.constellationId, sys.id);
+    colors[i * 3] = r;
+    colors[i * 3 + 1] = g;
+    colors[i * 3 + 2] = b;
+
+    sizes[i] = 1.5 + Math.random() * 2.5;
+  }
+
+  return { positions, colors, sizes, velocities, count, scale };
+}
+
+// ── Black hole attractor ──────────────────────────────────────
+interface BlackHole {
+  x: number; y: number; z: number;
+  cx: number; cy: number; cz: number;
   mass: number;
-  // Orbit parameters
-  cx: number; cy: number;
-  rx: number; ry: number;
+  radius: number;
   angle: number;
   speed: number;
 }
 
-function createParticle(w: number, h: number): Particle {
-  const angle = Math.random() * Math.PI * 2;
-  const dist = 100 + Math.random() * Math.min(w, h) * 0.4;
-  return {
-    x: w / 2 + Math.cos(angle) * dist,
-    y: h / 2 + Math.sin(angle) * dist,
-    vx: (Math.random() - 0.5) * SPAWN_VELOCITY * 2 + Math.cos(angle + Math.PI / 2) * SPAWN_VELOCITY,
-    vy: (Math.random() - 0.5) * SPAWN_VELOCITY * 2 + Math.sin(angle + Math.PI / 2) * SPAWN_VELOCITY,
-    color: COLORS[Math.floor(Math.random() * COLORS.length)],
-    alpha: 0.4 + Math.random() * 0.6,
-    size: 1 + Math.random() * 2,
-    trail: [],
-  };
+interface BHConfig { cx: number; cy: number; cz: number; mass: number; speed: number }
+
+const DEFAULT_BH_CONFIGS: BHConfig[] = [
+  { cx: 2, cy: 25, cz: -87, mass: 1.0, speed: 0.0008 },
+  { cx: 39, cy: 27, cz: -112, mass: 0.85, speed: -0.0012 },
+  { cx: 74, cy: 26, cz: -64, mass: 0.7, speed: 0.0006 },
+];
+
+function createTrinar3D(configs: BHConfig[]): BlackHole[] {
+  const orbitRadius = 20;
+  return configs.map((c, i) => ({
+    x: 0, y: 0, z: 0,
+    cx: c.cx, cy: c.cy, cz: c.cz,
+    mass: c.mass, radius: orbitRadius,
+    angle: (i * Math.PI * 2) / 3,
+    speed: c.speed,
+  }));
 }
 
-function createAttractor(w: number, h: number): Attractor {
-  return {
-    x: w / 2, y: h / 2,
-    mass: 0.6 + Math.random() * 0.8,
-    cx: w / 2, cy: h / 2,
-    rx: 60 + Math.random() * Math.min(w, h) * 0.2,
-    ry: 40 + Math.random() * Math.min(w, h) * 0.15,
-    angle: Math.random() * Math.PI * 2,
-    speed: 0.0003 + Math.random() * 0.0006,
-  };
+// ── Star point sprite texture ─────────────────────────────────
+function createStarTexture(): THREE.Texture {
+  const size = 64;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+
+  const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  grad.addColorStop(0, "rgba(255, 255, 255, 1.0)");
+  grad.addColorStop(0.15, "rgba(255, 255, 255, 0.8)");
+  grad.addColorStop(0.4, "rgba(255, 255, 255, 0.15)");
+  grad.addColorStop(1, "rgba(255, 255, 255, 0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  return tex;
 }
 
+// ── Black hole glow texture ──────────────────────────────────
+function createGlowTexture(): THREE.Texture {
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+
+  // Warm amber glow (EVE Frontier key art style)
+  const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  grad.addColorStop(0, "rgba(255, 255, 240, 1.0)");
+  grad.addColorStop(0.1, "rgba(255, 200, 120, 0.7)");
+  grad.addColorStop(0.3, "rgba(240, 140, 40, 0.3)");
+  grad.addColorStop(0.6, "rgba(180, 80, 10, 0.1)");
+  grad.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+// ── Black hole visual ────────────────────────────────────────
+// Lore-accurate colors (hot amber/orange accretion — from EVE Frontier key art)
+const LORE_COLORS = [
+  new THREE.Color(0.9, 0.45, 0.08),  // hot amber
+  new THREE.Color(0.85, 0.35, 0.05), // deep orange
+  new THREE.Color(0.95, 0.55, 0.12), // warm gold
+];
+
+// High-vis debug colors
+const DEBUG_COLORS = [
+  new THREE.Color(0.9, 0.15, 0.1),   // red
+  new THREE.Color(0.85, 0.1, 0.15),  // crimson
+  new THREE.Color(0.8, 0.2, 0.1),    // scarlet
+];
+
+function BlackHoleVisual({ position, intensity, index, highVis }: { position: [number, number, number]; intensity: number; index: number; highVis: boolean }) {
+  const groupRef = useRef<THREE.Group>(null);
+  const ringRef = useRef<THREE.Mesh>(null);
+  const glowTex = useMemo(createGlowTexture, []);
+
+  const color = highVis ? DEBUG_COLORS[index % 3] : LORE_COLORS[index % 3];
+
+  useFrame(({ camera, clock }) => {
+    if (!groupRef.current) return;
+    groupRef.current.position.set(position[0], position[1], position[2]);
+
+    // Rotate accretion disk
+    if (ringRef.current) {
+      ringRef.current.rotation.z = clock.elapsedTime * (0.2 + index * 0.1);
+    }
+
+    // Billboard the glow sprites toward camera
+    for (const child of groupRef.current.children) {
+      if ((child as any).isMesh && child !== ringRef.current) {
+        child.quaternion.copy(camera.quaternion);
+      }
+    }
+  });
+
+  const coreSize = 4 + intensity * 2;
+
+  return (
+    <group ref={groupRef}>
+      {/* Core */}
+      <mesh>
+        <sphereGeometry args={[coreSize, 16, 16]} />
+        <meshBasicMaterial color={highVis ? color : 0x020408} />
+      </mesh>
+
+      {/* Inner glow sprite */}
+      <mesh>
+        <planeGeometry args={[coreSize * 10, coreSize * 10]} />
+        <meshBasicMaterial
+          map={glowTex}
+          color={color}
+          transparent
+          opacity={(highVis ? 0.8 : 0.3) * intensity}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+
+      {/* Outer glow sprite */}
+      <mesh>
+        <planeGeometry args={[coreSize * 20, coreSize * 20]} />
+        <meshBasicMaterial
+          map={glowTex}
+          color={color}
+          transparent
+          opacity={(highVis ? 0.35 : 0.12) * intensity}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+
+      {/* Accretion disk — red-shifted in lore mode */}
+      <mesh ref={ringRef} rotation={[Math.PI * 0.4 + index * 0.3, 0, 0]}>
+        <ringGeometry args={[coreSize * 1.5, coreSize * 5, 48]} />
+        <meshBasicMaterial
+          color={highVis ? color : new THREE.Color(0.95, 0.5, 0.1)}
+          transparent
+          opacity={(highVis ? 0.3 : 0.15) * intensity}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+    </group>
+  );
+}
+
+// ── Main star field component (3D physics) ───────────────────
+function StarField({ starData, onReady, resetKey, gravityMults, bhConfigs, paused, highVis }: { starData: StarData; onReady: () => void; resetKey: number; gravityMults: [number, number, number]; bhConfigs: BHConfig[]; paused: boolean; highVis: boolean }) {
+  const pointsRef = useRef<THREE.Points>(null);
+  const frameRef = useRef(0);
+  const blackHolesRef = useRef<BlackHole[]>(createTrinar3D(bhConfigs));
+
+  // Update black hole home positions when configs change
+  useEffect(() => {
+    const bhs = blackHolesRef.current;
+    for (let i = 0; i < bhs.length && i < bhConfigs.length; i++) {
+      bhs[i].cx = bhConfigs[i].cx;
+      bhs[i].cy = bhConfigs[i].cy;
+      bhs[i].cz = bhConfigs[i].cz;
+    }
+  }, [bhConfigs]);
+  const [bhPositions, setBhPositions] = useState<[number, number, number][]>([[0, 0, 0], [0, 0, 0], [0, 0, 0]]);
+  const texture = useMemo(createStarTexture, []);
+
+  const homePositions = useRef(new Float32Array(starData.positions));
+  const velocities = useRef(starData.velocities);
+
+  useEffect(() => { onReady(); }, [onReady]);
+
+  // Reset
+  useEffect(() => {
+    if (resetKey === 0) return;
+    if (!pointsRef.current) return;
+    const positions = pointsRef.current.geometry.attributes.position.array as Float32Array;
+    const home = homePositions.current;
+    const vel = velocities.current;
+    for (let i = 0; i < positions.length; i++) positions[i] = home[i];
+    for (let i = 0; i < vel.length; i++) vel[i] = 0;
+    pointsRef.current.geometry.attributes.position.needsUpdate = true;
+    frameRef.current = 0;
+    const bhs = blackHolesRef.current;
+    for (let i = 0; i < bhs.length; i++) {
+      bhs[i].angle = (i * Math.PI * 2) / 3;
+    }
+  }, [resetKey]);
+
+  useFrame(() => {
+    if (!pointsRef.current) return;
+    if (paused) {
+      // Still update black hole positions for display, just don't run physics
+      const bhs = blackHolesRef.current;
+      for (const bh of bhs) {
+        bh.x = bh.cx;
+        bh.y = bh.cy;
+        bh.z = bh.cz;
+      }
+      setBhPositions(bhs.map(bh => [bh.x, bh.y, bh.z] as [number, number, number]));
+      return;
+    }
+
+    const frame = ++frameRef.current;
+    const gravityPhase = Math.max(0, frame - INITIAL_PAUSE_FRAMES);
+    const gravityStrength = Math.min(1, gravityPhase / GRAVITY_RAMP_FRAMES);
+
+    const bhs = blackHolesRef.current;
+    const positions = pointsRef.current.geometry.attributes.position.array as Float32Array;
+    const vel = velocities.current;
+    const count = starData.count;
+
+    // Update black holes — orbit around their home position in 3D
+    for (const bh of bhs) {
+      bh.angle += bh.speed;
+      bh.x = bh.cx + Math.cos(bh.angle) * bh.radius;
+      bh.y = bh.cy + Math.sin(bh.angle) * bh.radius * 0.5;
+      bh.z = bh.cz + Math.sin(bh.angle * 0.7) * bh.radius * 0.3;
+    }
+
+    setBhPositions(bhs.map(bh => [bh.x, bh.y, bh.z] as [number, number, number]));
+
+    if (gravityStrength > 0) {
+      const gdt = G * 0.016 * gravityStrength;
+      const soft2 = SOFTENING * SOFTENING;
+      const maxSpd2 = MAX_SPEED * MAX_SPEED;
+      const damp = DAMPING;
+
+      for (let i = 0; i < count; i++) {
+        const pi3 = i * 3;
+        const sx = positions[pi3];
+        const sy = positions[pi3 + 1];
+        const sz = positions[pi3 + 2];
+        let vx = vel[pi3];
+        let vy = vel[pi3 + 1];
+        let vz = vel[pi3 + 2];
+
+        // Gravity from each black hole (with per-hole multiplier)
+        for (let bi = 0; bi < bhs.length; bi++) {
+          const bh = bhs[bi];
+          const mult = gravityMults[bi] ?? 1;
+          if (mult === 0) continue;
+          const dx = bh.x - sx;
+          const dy = bh.y - sy;
+          const dz = bh.z - sz;
+          const distSq = dx * dx + dy * dy + dz * dz + soft2;
+          const invDist = 1 / Math.sqrt(distSq);
+          const f = gdt * bh.mass * mult / distSq;
+          vx += dx * invDist * f;
+          vy += dy * invDist * f;
+          vz += dz * invDist * f;
+        }
+
+        vx *= damp;
+        vy *= damp;
+        vz *= damp;
+
+        const spd2 = vx * vx + vy * vy + vz * vz;
+        if (spd2 > maxSpd2) {
+          const s = MAX_SPEED / Math.sqrt(spd2);
+          vx *= s;
+          vy *= s;
+          vz *= s;
+        }
+
+        positions[pi3] = sx + vx;
+        positions[pi3 + 1] = sy + vy;
+        positions[pi3 + 2] = sz + vz;
+        vel[pi3] = vx;
+        vel[pi3 + 1] = vy;
+        vel[pi3 + 2] = vz;
+      }
+
+      pointsRef.current.geometry.attributes.position.needsUpdate = true;
+    }
+  });
+
+  return (
+    <>
+      <points ref={pointsRef}>
+        <bufferGeometry>
+          <bufferAttribute attach="attributes-position" args={[starData.positions, 3]} />
+          <bufferAttribute attach="attributes-color" args={[starData.colors, 3]} />
+          <bufferAttribute attach="attributes-size" args={[starData.sizes, 1]} />
+        </bufferGeometry>
+        <pointsMaterial
+          vertexColors
+          size={4}
+          sizeAttenuation
+          map={texture}
+          transparent
+          opacity={0.9}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+        />
+      </points>
+
+      {bhPositions.map((pos, i) => (
+        <BlackHoleVisual
+          key={i}
+          position={pos}
+          index={i}
+          highVis={highVis}
+          intensity={Math.min(1, frameRef.current > INITIAL_PAUSE_FRAMES
+            ? (frameRef.current - INITIAL_PAUSE_FRAMES) / GRAVITY_RAMP_FRAMES
+            : 0) * (gravityMults[i] > 0 ? 1 : 0.1)}
+        />
+      ))}
+    </>
+  );
+}
+
+// ── Camera reset helper ───────────────────────────────────────
+function CameraResetter({ resetKey }: { resetKey: number }) {
+  const { camera } = useThree();
+  const controlsRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (resetKey === 0) return;
+    camera.position.set(0, 200, 800);
+    camera.lookAt(0, 0, 0);
+    if (controlsRef.current) controlsRef.current.reset();
+  }, [resetKey, camera]);
+
+  return (
+    <OrbitControls
+      ref={controlsRef}
+      enablePan
+      enableZoom
+      enableRotate
+      rotateSpeed={0.5}
+      zoomSpeed={0.8}
+      panSpeed={0.5}
+      minDistance={50}
+      maxDistance={2000}
+    />
+  );
+}
+
+// ── Landing page wrapper ──────────────────────────────────────
 export function LandingPage({ onEnter }: { onEnter: () => void }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const animRef = useRef<number>(0);
-  const mouseRef = useRef<{ x: number; y: number; active: boolean }>({ x: 0, y: 0, active: false });
-  const stateRef = useRef<{ particles: Particle[]; attractors: Attractor[]; time: number } | null>(null);
+  const [starData, setStarData] = useState<StarData | null>(null);
   const [showUI, setShowUI] = useState(false);
-
-  // Fade in UI after a beat
-  useEffect(() => {
-    const t = setTimeout(() => setShowUI(true), 600);
-    return () => clearTimeout(t);
-  }, []);
-
-  const init = useCallback((w: number, h: number) => {
-    const particles: Particle[] = [];
-    for (let i = 0; i < PARTICLE_COUNT; i++) {
-      particles.push(createParticle(w, h));
-    }
-    const attractors: Attractor[] = [];
-    for (let i = 0; i < ATTRACTOR_COUNT; i++) {
-      attractors.push(createAttractor(w, h));
-    }
-    stateRef.current = { particles, attractors, time: 0 };
-  }, []);
+  const [uiVisible, setUiVisible] = useState(true);
+  const [starCount, setStarCount] = useState(0);
+  const [resetKey, setResetKey] = useState(0);
+  const [gravityMults, setGravityMults] = useState<[number, number, number]>([1, 1, 1]);
+  const [bhConfigs, setBhConfigs] = useState<BHConfig[]>([...DEFAULT_BH_CONFIGS]);
+  const [simPaused, setSimPaused] = useState(false);
+  const [highVis, setHighVis] = useState(false);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d")!;
+    getSolarSystemMap().then((systems) => {
+      const data = projectSystems3D(systems);
+      setStarData(data);
+      setStarCount(data.count);
+    });
+  }, []);
 
-    function resize() {
-      canvas!.width = window.innerWidth;
-      canvas!.height = window.innerHeight;
-      if (!stateRef.current) {
-        init(canvas!.width, canvas!.height);
-      }
-    }
-    resize();
-    window.addEventListener("resize", resize);
-
-    function tick() {
-      const state = stateRef.current;
-      if (!state) { animRef.current = requestAnimationFrame(tick); return; }
-
-      const w = canvas!.width;
-      const h = canvas!.height;
-      const { particles, attractors } = state;
-      state.time++;
-
-      // Update attractor positions (slow orbits)
-      for (const a of attractors) {
-        a.angle += a.speed;
-        a.x = a.cx + Math.cos(a.angle) * a.rx;
-        a.y = a.cy + Math.sin(a.angle) * a.ry;
-      }
-
-      // Update particles
-      const mouse = mouseRef.current;
-      for (const p of particles) {
-        // Store trail
-        p.trail.push({ x: p.x, y: p.y });
-        if (p.trail.length > TRAIL_LENGTH) p.trail.shift();
-
-        // Gravity from attractors
-        for (const a of attractors) {
-          const dx = a.x - p.x;
-          const dy = a.y - p.y;
-          const distSq = dx * dx + dy * dy + SOFTENING * SOFTENING;
-          const dist = Math.sqrt(distSq);
-          const force = (G * a.mass) / distSq;
-          p.vx += (dx / dist) * force * 0.016;
-          p.vy += (dy / dist) * force * 0.016;
-        }
-
-        // Mouse gravity
-        if (mouse.active) {
-          const dx = mouse.x - p.x;
-          const dy = mouse.y - p.y;
-          const distSq = dx * dx + dy * dy + SOFTENING * SOFTENING;
-          const dist = Math.sqrt(distSq);
-          const force = MOUSE_G / distSq;
-          p.vx += (dx / dist) * force * 0.016;
-          p.vy += (dy / dist) * force * 0.016;
-        }
-
-        // Damping
-        p.vx *= DAMPING;
-        p.vy *= DAMPING;
-
-        // Clamp speed
-        const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
-        if (speed > MAX_SPEED) {
-          p.vx = (p.vx / speed) * MAX_SPEED;
-          p.vy = (p.vy / speed) * MAX_SPEED;
-        }
-
-        // Integrate
-        p.x += p.vx;
-        p.y += p.vy;
-
-        // Wrap edges with margin
-        const margin = 50;
-        if (p.x < -margin) p.x = w + margin;
-        if (p.x > w + margin) p.x = -margin;
-        if (p.y < -margin) p.y = h + margin;
-        if (p.y > h + margin) p.y = -margin;
-      }
-
-      // ── Render ──────────────────────────────────────────────
-      // Fade background (creates trail effect)
-      ctx.fillStyle = "rgba(8, 10, 16, 0.15)";
-      ctx.fillRect(0, 0, w, h);
-
-      // Draw subtle grid
-      ctx.strokeStyle = "rgba(40, 60, 80, 0.08)";
-      ctx.lineWidth = 0.5;
-      const gridSize = 80;
-      const gridOffsetX = (state.time * 0.1) % gridSize;
-      const gridOffsetY = (state.time * 0.05) % gridSize;
-      for (let x = -gridSize + gridOffsetX; x < w + gridSize; x += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, h);
-        ctx.stroke();
-      }
-      for (let y = -gridSize + gridOffsetY; y < h + gridSize; y += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(w, y);
-        ctx.stroke();
-      }
-
-      // Draw attractor glow
-      for (const a of attractors) {
-        const grad = ctx.createRadialGradient(a.x, a.y, 0, a.x, a.y, 60 * a.mass);
-        grad.addColorStop(0, `rgba(100, 180, 255, ${0.08 * a.mass})`);
-        grad.addColorStop(1, "transparent");
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(a.x, a.y, 60 * a.mass, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // Draw particle trails and particles
-      for (const p of particles) {
-        const [r, g, b] = p.color;
-
-        // Trail
-        if (p.trail.length > 1) {
-          ctx.beginPath();
-          ctx.moveTo(p.trail[0].x, p.trail[0].y);
-          for (let i = 1; i < p.trail.length; i++) {
-            ctx.lineTo(p.trail[i].x, p.trail[i].y);
-          }
-          ctx.lineTo(p.x, p.y);
-          ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${p.alpha * 0.15})`;
-          ctx.lineWidth = p.size * 0.6;
-          ctx.stroke();
-        }
-
-        // Glow
-        const glowSize = p.size * 4;
-        const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, glowSize);
-        grad.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${p.alpha * 0.4})`);
-        grad.addColorStop(1, "transparent");
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, glowSize, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Core
-        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${p.alpha})`;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // Mouse cursor glow
-      if (mouse.active) {
-        const grad = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 80);
-        grad.addColorStop(0, "rgba(255, 200, 100, 0.12)");
-        grad.addColorStop(0.5, "rgba(255, 140, 50, 0.04)");
-        grad.addColorStop(1, "transparent");
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(mouse.x, mouse.y, 80, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      animRef.current = requestAnimationFrame(tick);
-    }
-
-    animRef.current = requestAnimationFrame(tick);
-
-    // Mouse handlers
-    const onMove = (e: MouseEvent) => {
-      mouseRef.current.x = e.clientX;
-      mouseRef.current.y = e.clientY;
-      mouseRef.current.active = true;
-    };
-    const onLeave = () => { mouseRef.current.active = false; };
-    const onTouch = (e: TouchEvent) => {
-      if (e.touches.length > 0) {
-        mouseRef.current.x = e.touches[0].clientX;
-        mouseRef.current.y = e.touches[0].clientY;
-        mouseRef.current.active = true;
-      }
-    };
-    const onTouchEnd = () => { mouseRef.current.active = false; };
-
-    canvas.addEventListener("mousemove", onMove);
-    canvas.addEventListener("mouseleave", onLeave);
-    canvas.addEventListener("touchmove", onTouch, { passive: true });
-    canvas.addEventListener("touchend", onTouchEnd);
-
-    return () => {
-      cancelAnimationFrame(animRef.current);
-      window.removeEventListener("resize", resize);
-      canvas.removeEventListener("mousemove", onMove);
-      canvas.removeEventListener("mouseleave", onLeave);
-      canvas.removeEventListener("touchmove", onTouch);
-      canvas.removeEventListener("touchend", onTouchEnd);
-    };
-  }, [init]);
+  const handleReady = useCallback(() => {
+    setTimeout(() => setShowUI(true), 800);
+  }, []);
 
   return (
     <div style={{ position: "relative", width: "100vw", height: "100vh", overflow: "hidden", background: "#080a10" }}>
-      <canvas
-        ref={canvasRef}
-        style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", cursor: "crosshair" }}
-      />
+      {/* Three.js Canvas */}
+      <Canvas
+        style={{ position: "absolute", top: 0, left: 0 }}
+        camera={{ position: [0, 200, 800], fov: 60, near: 1, far: 4000 }}
+        gl={{ antialias: false, alpha: false }}
+        dpr={Math.min(window.devicePixelRatio, 2)}
+        onCreated={({ gl }) => {
+          gl.setClearColor(new THREE.Color(0x080a10));
+        }}
+      >
+        <CameraResetter resetKey={resetKey} />
+        {starData && <StarField starData={starData} onReady={handleReady} resetKey={resetKey} gravityMults={gravityMults} bhConfigs={bhConfigs} paused={simPaused} highVis={highVis} />}
+      </Canvas>
+
+      {/* Loading state */}
+      {!starData && (
+        <div style={{
+          position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
+        }}>
+          <span style={{ fontFamily: "monospace", fontSize: 12, color: "rgba(100, 140, 180, 0.4)" }}>
+            LOADING STAR CHART...
+          </span>
+        </div>
+      )}
 
       {/* Overlay UI */}
       <div
@@ -316,19 +511,18 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
           alignItems: "center",
           justifyContent: "center",
           pointerEvents: "none",
-          opacity: showUI ? 1 : 0,
-          transition: "opacity 1.2s ease",
+          opacity: showUI && uiVisible ? 1 : 0,
+          transition: "opacity 0.5s ease",
         }}
       >
-        {/* Title */}
         <h1
           style={{
             fontFamily: "monospace",
             fontSize: "clamp(2rem, 5vw, 4.5rem)",
             fontWeight: 700,
-            color: "rgba(255, 255, 255, 0.9)",
+            color: "rgba(255, 255, 255, 0.88)",
             letterSpacing: "0.3em",
-            textShadow: "0 0 40px rgba(64, 180, 255, 0.4), 0 0 80px rgba(64, 180, 255, 0.15)",
+            textShadow: "0 0 40px rgba(64, 180, 255, 0.35), 0 0 80px rgba(64, 180, 255, 0.12)",
             margin: 0,
             textAlign: "center",
             userSelect: "none",
@@ -337,12 +531,11 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
           FRONTIER OPS
         </h1>
 
-        {/* Subtitle */}
         <p
           style={{
             fontFamily: "monospace",
             fontSize: "clamp(0.7rem, 1.5vw, 1rem)",
-            color: "rgba(180, 200, 220, 0.6)",
+            color: "rgba(180, 200, 220, 0.55)",
             letterSpacing: "0.15em",
             margin: "8px 0 0 0",
             textAlign: "center",
@@ -352,34 +545,31 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
           OUTPOST OPERATOR'S CONSOLE
         </p>
 
-        {/* Decorative line */}
         <div
           style={{
             width: "clamp(100px, 20vw, 200px)",
             height: 1,
-            background: "linear-gradient(90deg, transparent, rgba(64, 180, 255, 0.5), transparent)",
+            background: "linear-gradient(90deg, transparent, rgba(64, 180, 255, 0.4), transparent)",
             margin: "24px 0",
           }}
         />
 
-        {/* Status indicators */}
         <div
           style={{
             display: "flex",
             gap: "clamp(16px, 3vw, 32px)",
             fontFamily: "monospace",
             fontSize: "clamp(0.55rem, 1vw, 0.7rem)",
-            color: "rgba(120, 200, 150, 0.7)",
+            color: "rgba(120, 180, 150, 0.6)",
             letterSpacing: "0.1em",
             userSelect: "none",
           }}
         >
           <span>SUI TESTNET <span style={{ color: "rgba(120, 255, 180, 0.9)" }}>●</span></span>
           <span>ESCROW <span style={{ color: "rgba(64, 180, 255, 0.9)" }}>●</span></span>
-          <span>ON-CHAIN <span style={{ color: "rgba(255, 200, 80, 0.9)" }}>●</span></span>
+          <span>{starCount.toLocaleString()} SYSTEMS <span style={{ color: "rgba(255, 220, 80, 0.9)" }}>●</span></span>
         </div>
 
-        {/* Enter button */}
         <button
           onClick={onEnter}
           style={{
@@ -392,43 +582,236 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
             letterSpacing: "0.2em",
             color: "rgba(200, 220, 240, 0.9)",
             background: "rgba(64, 180, 255, 0.08)",
-            border: "1px solid rgba(64, 180, 255, 0.3)",
+            border: "1px solid rgba(64, 180, 255, 0.25)",
             borderRadius: 4,
             cursor: "pointer",
             transition: "all 0.3s ease",
             textTransform: "uppercase",
           }}
           onMouseEnter={(e) => {
-            (e.target as HTMLButtonElement).style.background = "rgba(64, 180, 255, 0.2)";
-            (e.target as HTMLButtonElement).style.borderColor = "rgba(64, 180, 255, 0.6)";
-            (e.target as HTMLButtonElement).style.boxShadow = "0 0 30px rgba(64, 180, 255, 0.15)";
+            const btn = e.target as HTMLButtonElement;
+            btn.style.background = "rgba(64, 180, 255, 0.18)";
+            btn.style.borderColor = "rgba(64, 180, 255, 0.5)";
+            btn.style.boxShadow = "0 0 30px rgba(64, 180, 255, 0.12)";
           }}
           onMouseLeave={(e) => {
-            (e.target as HTMLButtonElement).style.background = "rgba(64, 180, 255, 0.08)";
-            (e.target as HTMLButtonElement).style.borderColor = "rgba(64, 180, 255, 0.3)";
-            (e.target as HTMLButtonElement).style.boxShadow = "none";
+            const btn = e.target as HTMLButtonElement;
+            btn.style.background = "rgba(64, 180, 255, 0.08)";
+            btn.style.borderColor = "rgba(64, 180, 255, 0.25)";
+            btn.style.boxShadow = "none";
           }}
         >
           Enter Console
         </button>
 
-        {/* Bottom credits */}
         <div
           style={{
             position: "absolute",
             bottom: "clamp(16px, 3vh, 32px)",
             fontFamily: "monospace",
             fontSize: "0.6rem",
-            color: "rgba(100, 120, 140, 0.5)",
+            color: "rgba(100, 120, 140, 0.4)",
             letterSpacing: "0.1em",
             textAlign: "center",
             userSelect: "none",
+            lineHeight: 1.8,
           }}
         >
           JOBS · BOUNTIES · ASSEMBLIES · STARMAP · MISSION CONTROL
           <br />
-          FULLY DECENTRALIZED · NO BACKEND · ON-CHAIN ESCROW
+          THE TRINARY AWAITS
         </div>
+      </div>
+
+      {/* Bottom-left: gravity sliders */}
+      <div
+        style={{
+          position: "absolute",
+          bottom: "clamp(16px, 3vh, 32px)",
+          left: "clamp(16px, 3vw, 32px)",
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          opacity: showUI && uiVisible ? 0.7 : 0,
+          transition: "opacity 0.5s ease",
+          fontFamily: "monospace",
+          fontSize: "0.55rem",
+          letterSpacing: "0.08em",
+          color: "rgba(160, 180, 200, 0.6)",
+        }}
+      >
+        {(["BH-1", "BH-2", "BH-3"] as const).map((label, i) => {
+          const colors = ["#3366cc", "#7733bb", "#22aaaa"];
+          const inputStyle = {
+            width: 65, background: "rgba(0,0,0,0.4)", border: "1px solid rgba(100,140,180,0.2)",
+            borderRadius: 3, color: "rgba(180,200,220,0.85)", fontFamily: "monospace", fontSize: "0.8rem",
+            padding: "4px 6px", textAlign: "right" as const,
+          };
+          return (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <span style={{ width: 30, color: colors[i] }}>{label}</span>
+              <input
+                type="range" min="0" max="3" step="0.1"
+                value={gravityMults[i]}
+                onChange={(e) => {
+                  const next = [...gravityMults] as [number, number, number];
+                  next[i] = parseFloat(e.target.value);
+                  setGravityMults(next);
+                }}
+                style={{ width: 60, accentColor: colors[i] }}
+              />
+              <span style={{ width: 22, textAlign: "right" }}>{gravityMults[i].toFixed(1)}x</span>
+              {(["cx", "cy", "cz"] as const).map((axis) => (
+                <input
+                  key={axis}
+                  type="number"
+                  value={bhConfigs[i][axis]}
+                  onChange={(e) => {
+                    const next = bhConfigs.map((c, ci) =>
+                      ci === i ? { ...c, [axis]: parseFloat(e.target.value) || 0 } : c,
+                    );
+                    setBhConfigs(next);
+                  }}
+                  style={inputStyle}
+                  title={axis.toUpperCase()}
+                />
+              ))}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Bottom-right controls */}
+      <div
+        style={{
+          position: "absolute",
+          bottom: "clamp(16px, 3vh, 32px)",
+          right: "clamp(16px, 3vw, 32px)",
+          display: "flex",
+          gap: 8,
+          opacity: showUI ? 1 : 0,
+          transition: "opacity 1s ease",
+        }}
+      >
+        {/* Pause/Resume Sim */}
+        <button
+          onClick={() => setSimPaused(!simPaused)}
+          style={{
+            padding: "6px 14px",
+            fontFamily: "monospace",
+            fontSize: "0.6rem",
+            letterSpacing: "0.1em",
+            color: simPaused ? "rgba(255, 180, 80, 0.8)" : "rgba(160, 180, 200, 0.5)",
+            background: simPaused ? "rgba(255, 180, 80, 0.08)" : "rgba(255, 255, 255, 0.03)",
+            border: `1px solid ${simPaused ? "rgba(255, 180, 80, 0.3)" : "rgba(100, 140, 180, 0.15)"}`,
+            borderRadius: 3,
+            cursor: "pointer",
+            transition: "all 0.3s ease",
+            textTransform: "uppercase",
+          }}
+          onMouseEnter={(e) => {
+            const btn = e.target as HTMLButtonElement;
+            btn.style.color = "rgba(200, 220, 240, 0.8)";
+            btn.style.borderColor = "rgba(64, 180, 255, 0.4)";
+          }}
+          onMouseLeave={(e) => {
+            const btn = e.target as HTMLButtonElement;
+            btn.style.color = simPaused ? "rgba(255, 180, 80, 0.8)" : "rgba(160, 180, 200, 0.5)";
+            btn.style.borderColor = simPaused ? "rgba(255, 180, 80, 0.3)" : "rgba(100, 140, 180, 0.15)";
+          }}
+        >
+          {simPaused ? "▶ Resume" : "⏸ Pause"}
+        </button>
+
+        {/* High-vis toggle */}
+        <button
+          onClick={() => setHighVis(!highVis)}
+          style={{
+            padding: "6px 14px",
+            fontFamily: "monospace",
+            fontSize: "0.6rem",
+            letterSpacing: "0.1em",
+            color: highVis ? "rgba(255, 100, 80, 0.8)" : "rgba(160, 180, 200, 0.5)",
+            background: highVis ? "rgba(255, 100, 80, 0.08)" : "rgba(255, 255, 255, 0.03)",
+            border: `1px solid ${highVis ? "rgba(255, 100, 80, 0.3)" : "rgba(100, 140, 180, 0.15)"}`,
+            borderRadius: 3,
+            cursor: "pointer",
+            transition: "all 0.3s ease",
+            textTransform: "uppercase",
+          }}
+          onMouseEnter={(e) => {
+            const btn = e.target as HTMLButtonElement;
+            btn.style.color = "rgba(200, 220, 240, 0.8)";
+            btn.style.borderColor = "rgba(64, 180, 255, 0.4)";
+          }}
+          onMouseLeave={(e) => {
+            const btn = e.target as HTMLButtonElement;
+            btn.style.color = highVis ? "rgba(255, 100, 80, 0.8)" : "rgba(160, 180, 200, 0.5)";
+            btn.style.borderColor = highVis ? "rgba(255, 100, 80, 0.3)" : "rgba(100, 140, 180, 0.15)";
+          }}
+        >
+          {highVis ? "Hi-Vis" : "Lore"}
+        </button>
+
+        {/* Hide/Show UI */}
+        <button
+          onClick={() => setUiVisible(!uiVisible)}
+          style={{
+            padding: "6px 14px",
+            fontFamily: "monospace",
+            fontSize: "0.6rem",
+            letterSpacing: "0.1em",
+            color: "rgba(160, 180, 200, 0.5)",
+            background: "rgba(255, 255, 255, 0.03)",
+            border: "1px solid rgba(100, 140, 180, 0.15)",
+            borderRadius: 3,
+            cursor: "pointer",
+            transition: "all 0.3s ease",
+            textTransform: "uppercase",
+          }}
+          onMouseEnter={(e) => {
+            const btn = e.target as HTMLButtonElement;
+            btn.style.color = "rgba(200, 220, 240, 0.8)";
+            btn.style.borderColor = "rgba(64, 180, 255, 0.4)";
+          }}
+          onMouseLeave={(e) => {
+            const btn = e.target as HTMLButtonElement;
+            btn.style.color = "rgba(160, 180, 200, 0.5)";
+            btn.style.borderColor = "rgba(100, 140, 180, 0.15)";
+          }}
+        >
+          {uiVisible ? "Hide UI" : "Show UI"}
+        </button>
+
+        {/* Reset */}
+        <button
+          onClick={() => setResetKey((k) => k + 1)}
+          style={{
+            padding: "6px 14px",
+            fontFamily: "monospace",
+            fontSize: "0.6rem",
+            letterSpacing: "0.1em",
+            color: "rgba(160, 180, 200, 0.5)",
+            background: "rgba(255, 255, 255, 0.03)",
+            border: "1px solid rgba(100, 140, 180, 0.15)",
+            borderRadius: 3,
+            cursor: "pointer",
+            transition: "all 0.3s ease",
+            textTransform: "uppercase",
+          }}
+          onMouseEnter={(e) => {
+            const btn = e.target as HTMLButtonElement;
+            btn.style.color = "rgba(200, 220, 240, 0.8)";
+            btn.style.borderColor = "rgba(64, 180, 255, 0.4)";
+          }}
+          onMouseLeave={(e) => {
+            const btn = e.target as HTMLButtonElement;
+            btn.style.color = "rgba(160, 180, 200, 0.5)";
+            btn.style.borderColor = "rgba(100, 140, 180, 0.15)";
+          }}
+        >
+          ↺ Reset
+        </button>
       </div>
     </div>
   );

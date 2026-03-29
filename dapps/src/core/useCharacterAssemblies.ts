@@ -144,7 +144,7 @@ async function fetchTypedObjects(
 export async function fetchAssembliesForWallet(walletAddress: string): Promise<AssemblyData[]> {
   // Try localStorage cache first
   const cacheKey = `assemblies:${walletAddress}`;
-  const cached = getFromCache<AssemblyData[]>(cacheKey, TTL.ASSEMBLIES);
+  const cached = await getFromCache<AssemblyData[]>(cacheKey, TTL.ASSEMBLIES);
   if (cached) {
     console.log(`[FrontierOps] Assemblies loaded from cache (${walletAddress.slice(0, 8)}…): ${cached.length} items`);
     return cached;
@@ -230,7 +230,7 @@ export async function fetchAssembliesForWallet(walletAddress: string): Promise<A
   console.log(`[FrontierOps] Total assemblies: ${assemblies.length}, unique: ${unique.length}`, unique);
 
   // Cache the results
-  setCache(cacheKey, unique);
+  await setCache(cacheKey, unique);
 
   // Also cache for Mission Control LLM access
   try {

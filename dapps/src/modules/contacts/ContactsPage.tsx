@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Box,
   Button,
@@ -14,6 +14,7 @@ import { useContacts } from "./hooks/useContacts";
 import { ContactList } from "./ContactList";
 import { ContactDetail } from "./ContactDetail";
 import type { ContactStanding } from "./contacts-types";
+import { searchCharactersByName, type CharacterSearchResult } from "../../core/character-search";
 
 export default function ContactsPage() {
   const { contacts, addContact, updateContact, removeContact, getContact } =
@@ -23,8 +24,19 @@ export default function ContactsPage() {
   const [newName, setNewName] = useState("");
   const [newId, setNewId] = useState("");
   const [newStanding, setNewStanding] = useState<ContactStanding>("neutral");
+  const [charSearch, setCharSearch] = useState("");
+  const [charResults, setCharResults] = useState<CharacterSearchResult[]>([]);
 
   const selected = selectedId ? getContact(selectedId) : undefined;
+
+  // Debounced character search
+  useEffect(() => {
+    if (charSearch.length < 2) { setCharResults([]); return; }
+    const timer = setTimeout(() => {
+      searchCharactersByName(charSearch).then(setCharResults);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [charSearch]);
 
   function handleAdd() {
     if (!newName.trim()) return;
@@ -33,6 +45,8 @@ export default function ContactsPage() {
     setNewName("");
     setNewId("");
     setNewStanding("neutral");
+    setCharSearch("");
+    setCharResults([]);
     setShowAdd(false);
     setSelectedId(id);
   }
@@ -59,16 +73,62 @@ export default function ContactsPage() {
             <Dialog.Content style={{ maxWidth: 380 }}>
               <Dialog.Title>Add Contact</Dialog.Title>
               <Flex direction="column" gap="3" mt="3">
-                <TextField.Root
-                  placeholder="Name"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                />
-                <TextField.Root
-                  placeholder="Address or ID (optional)"
-                  value={newId}
-                  onChange={(e) => setNewId(e.target.value)}
-                />
+                <Flex direction="column" style={{ position: "relative" }}>
+                  <TextField.Root
+                    placeholder="Search character name..."
+                    value={newName || charSearch}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (newName) {
+                        // User is typing over a selection
+                        setNewName("");
+                        setNewId("");
+                      }
+                      setCharSearch(v);
+                    }}
+                  />
+                  {charResults.length > 0 && (
+                    <Flex
+                      direction="column"
+                      style={{
+                        position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50,
+                        background: "var(--color-background)", border: "1px solid var(--color-border)",
+                        borderRadius: 4, maxHeight: 200, overflowY: "auto",
+                      }}
+                    >
+                      {charResults.map((c) => (
+                        <Flex
+                          key={c.characterId}
+                          align="center" justify="between" p="2"
+                          onClick={() => {
+                            setNewName(c.name);
+                            setNewId(c.address);
+                            setCharSearch("");
+                            setCharResults([]);
+                          }}
+                          style={{ cursor: "pointer", borderBottom: "1px solid var(--color-border)" }}
+                        >
+                          <Text size="1" weight="bold">{c.name}</Text>
+                          <Text size="1" color="gray" style={{ fontFamily: "monospace" }}>
+                            {c.address.slice(0, 6)}...{c.address.slice(-4)}
+                          </Text>
+                        </Flex>
+                      ))}
+                    </Flex>
+                  )}
+                </Flex>
+                {newName && newId && (
+                  <Text size="1" color="green">
+                    {newName} → {newId.slice(0, 10)}...{newId.slice(-6)}
+                  </Text>
+                )}
+                {!newName && (
+                  <TextField.Root
+                    placeholder="Or paste wallet address / ID"
+                    value={newId}
+                    onChange={(e) => setNewId(e.target.value)}
+                  />
+                )}
                 <SegmentedControl.Root
                   value={newStanding}
                   onValueChange={(v) => setNewStanding(v as ContactStanding)}

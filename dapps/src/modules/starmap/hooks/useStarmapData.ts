@@ -95,12 +95,12 @@ export function useStarmapData(): StarmapData {
   const { data: killHeat = new Map<number, number>() } = useQuery({
     queryKey: ["starmap-killheat"],
     queryFn: async () => {
-      const cached = getFromCache<Array<[number, number]>>("starmap-killheat", TTL.KILLMAILS);
+      const cached = await getFromCache<Array<[number, number]>>("starmap-killheat", TTL.KILLMAILS);
       if (cached) return new Map(cached);
 
       const result = await executeGraphQLQuery(GET_KILLMAILS, {});
       const heat = parseKillHeat(result);
-      setCache("starmap-killheat", Array.from(heat.entries()));
+      await setCache("starmap-killheat", Array.from(heat.entries()));
       return heat;
     },
     refetchInterval: 60_000, // refresh every minute

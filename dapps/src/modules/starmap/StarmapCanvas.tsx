@@ -9,6 +9,9 @@ import * as THREE from "three";
 import type { SolarSystem } from "../../core/world-api";
 import type { JumpRoute } from "./hooks/useGateLinks";
 import type { NormalizedCoord } from "./helpers/projection";
+import type { KillmailData } from "../danger-alerts/danger-types";
+import { useHeatmapData } from "./hooks/useHeatmapData";
+import { HeatmapBlobs } from "./HeatmapBlobs";
 
 export interface StarmapCanvasHandle {
   navigateTo: (nx: number, nz: number, targetZoom: number) => void;
@@ -23,6 +26,10 @@ interface StarmapCanvasProps {
   onSelectSystem: (id: number | null, pos?: { x: number; y: number }) => void;
   onHoverSystem: (id: number | null) => void;
   onReady?: () => void;
+  killmails?: KillmailData[];
+  heatmapCurrentTime?: number;
+  heatmapWindowDuration?: number;
+  heatmapEnabled?: boolean;
 }
 
 /** Normalize 3D coords to a centered unit cube */
@@ -398,6 +405,77 @@ function TravelLines({
   );
 }
 
+/** Static gate network — renders all stargate connections as dim lines */
+function GateNetwork({
+  positions,
+}: {
+  positions: Map<number, THREE.Vector3>;
+}) {
+  const [connections, setConnections] = useState<Array<{ from: number; to: number }>>([]);
+
+  useEffect(() => {
+    import("./data/gate-connections.json").then((mod) => {
+      setConnections(mod.default as Array<{ from: number; to: number }>);
+    });
+  }, []);
+
+  const geometry = useMemo(() => {
+    if (connections.length === 0 || positions.size === 0) return null;
+
+    const points: number[] = [];
+    let count = 0;
+    let missed = 0;
+
+    for (const conn of connections) {
+      const from = positions.get(conn.from);
+      const to = positions.get(conn.to);
+      if (!from || !to) { missed++; continue; }
+
+      points.push(from.x, from.y, from.z);
+      points.push(to.x, to.y, to.z);
+      count++;
+    }
+
+    console.log(`[Starmap] Gate network: ${count} lines rendered, ${missed} missed (${connections.length} total connections, ${positions.size} positions)`);
+
+    if (count === 0) return null;
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(points, 3));
+    return geo;
+  }, [connections, positions]);
+
+  if (!geometry) return null;
+
+  return (
+    <lineSegments geometry={geometry}>
+      <lineBasicMaterial
+        color={0x4488aa}
+        transparent
+        opacity={0.6}
+        blending={THREE.AdditiveBlending}
+        depthWrite={false}
+      />
+    </lineSegments>
+  );
+}
+
+/** Heatmap blob layer — must be inside R3F Canvas context */
+function HeatmapLayer({
+  killmails,
+  positions,
+  currentTime,
+  windowDuration,
+}: {
+  killmails: KillmailData[];
+  positions: Map<number, THREE.Vector3>;
+  currentTime: number;
+  windowDuration: number;
+}) {
+  const blobs = useHeatmapData(killmails, positions, currentTime, windowDuration);
+  return <HeatmapBlobs blobs={blobs} />;
+}
+
 function CameraController({ onReady }: { onReady?: () => void }) {
   const { camera } = useThree();
   const readyFired = useRef(false);
@@ -425,6 +503,10 @@ export const StarmapCanvas = forwardRef<StarmapCanvasHandle, StarmapCanvasProps>
     onSelectSystem,
     onHoverSystem,
     onReady,
+    killmails,
+    heatmapCurrentTime,
+    heatmapWindowDuration,
+    heatmapEnabled = true,
   }, ref) {
     const positions = useMemo(() => normalizePositions(systems), [systems]);
 
@@ -469,6 +551,17 @@ export const StarmapCanvas = forwardRef<StarmapCanvasHandle, StarmapCanvasProps>
             minDistance={5}
             maxDistance={2000}
           />
+
+          <GateNetwork positions={positions} />
+
+          {heatmapEnabled && killmails && killmails.length > 0 && (
+            <HeatmapLayer
+              killmails={killmails}
+              positions={positions}
+              currentTime={heatmapCurrentTime ?? Date.now()}
+              windowDuration={heatmapWindowDuration ?? 24 * 3600_000}
+            />
+          )}
 
           <StarField
             systems={systems}

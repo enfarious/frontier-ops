@@ -61,7 +61,7 @@ export function useNetworkNodes() {
       if (membersToScan.length === 0) return [];
 
       const cacheKey = `tribe-network-nodes:${tribeId}:${membersToScan.length}`;
-      const cached = getFromCache<NodeListItem[]>(cacheKey, TTL.TRIBE_ASSEMBLIES);
+      const cached = await getFromCache<NodeListItem[]>(cacheKey, TTL.TRIBE_ASSEMBLIES);
       if (cached) {
         console.log(`[FrontierOps] Tribe network nodes from cache: ${cached.length}`);
         return cached;
@@ -88,7 +88,7 @@ export function useNetworkNodes() {
         return true;
       });
 
-      setCache(cacheKey, unique);
+      await setCache(cacheKey, unique);
       return unique;
     },
     enabled: mode === "tribe" && !tribeLoading && membersToScan.length > 0,
