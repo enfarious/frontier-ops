@@ -34,7 +34,6 @@ export default function JobsBoardPage() {
       setError(null);
       try {
         const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-        console.log("[JobsBoard] Transaction success:", result);
         invalidateJobCache();
         await new Promise((r) => setTimeout(r, 3000));
         await refresh();

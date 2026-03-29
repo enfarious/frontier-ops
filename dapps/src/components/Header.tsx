@@ -61,9 +61,7 @@ export function Header({ onShowLanding }: Props) {
     if (!wallet) return;
     setShowWalletPicker(false);
     try {
-      console.log("[FrontierOps] Connecting to wallet:", wallet.name);
       await connectWallet({ wallet });
-      console.log("[FrontierOps] Wallet connected successfully");
     } catch (err) {
       console.error("[FrontierOps] Wallet connection failed:", err);
     }
@@ -81,6 +79,7 @@ export function Header({ onShowLanding }: Props) {
       justify="between"
       style={{
         borderBottom: "1px solid var(--color-border)",
+        position: "relative",
       }}
     >
       <Flex align="center" gap="3">
@@ -94,10 +93,24 @@ export function Header({ onShowLanding }: Props) {
           </button>
         )}
         <Heading size="4">Frontier Ops</Heading>
-        <Text size="1" color="gray" style={{ fontStyle: "italic", opacity: 0.7 }}>
-          {tagline}
-        </Text>
       </Flex>
+
+      {/* Centered tagline */}
+      <Text
+        size="2"
+        color="gray"
+        style={{
+          fontStyle: "italic",
+          opacity: 0.6,
+          position: "absolute",
+          left: "50%",
+          transform: "translateX(-50%)",
+          whiteSpace: "nowrap",
+          pointerEvents: "none",
+        }}
+      >
+        {tagline}
+      </Text>
 
       <Flex align="center" gap="4">
         {account && (

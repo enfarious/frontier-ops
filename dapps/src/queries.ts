@@ -14,14 +14,9 @@ async function fetchAssemblyInfo(assemblyId: string) {
     return null;
   }
 
-  const rawJson = moveObject.contents.json;
-  console.log("Raw assembly data:", rawJson);
-  console.log("Character owner:", assemblyOwner);
-
   const assembly = await transformToAssembly(assemblyId, moveObject, {
     character: assemblyOwner,
   });
-  console.log("Transformed assembly:", assembly);
 
   return { assembly, character: assemblyOwner };
 }
@@ -30,13 +25,7 @@ async function fetchAssemblyInfo(assemblyId: string) {
 async function fetchObjectData(objectId: string) {
   const result = await getObjectWithJson(objectId);
 
-  const json = result.data?.object?.asMoveObject?.contents?.json;
-  const type = result.data?.object?.asMoveObject?.contents?.type?.repr;
-
-  console.log("Object type:", type);
-  console.log("Object data:", json);
-
-  return json;
+  return result.data?.object?.asMoveObject?.contents?.json;
 }
 
 /** STEP 5 — getOwnedObjectsByType() for owned objects by type and wallet address. */
@@ -50,7 +39,6 @@ async function fetchUserAssemblies(
     (node) => node.address,
   );
 
-  console.log("Owned object addresses:", objectAddresses);
   return objectAddresses;
 }
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, } from "react";
 import { Box, Flex, Heading, Spinner, Text, TextField } from "@radix-ui/themes";
 import { useStarmapData } from "./hooks/useStarmapData";
 import { useJumpHistory } from "./hooks/useGateLinks";
@@ -116,12 +116,13 @@ export default function StarmapPage() {
   const setHomeSystem = useCallback(() => {
     if (selectedSystem) {
       localStorage.setItem(HOME_SYSTEM_KEY, String(selectedSystem));
+      setSavedHome(selectedSystem);
     }
   }, [selectedSystem]);
 
   // On first load, navigate to home system
   const hasNavigated = useRef(false);
-  const savedHome = useMemo(() => getSavedHomeSystem(), []);
+  const [savedHome, setSavedHome] = useState<number | null>(() => getSavedHomeSystem());
 
   // Callback for when canvas is ready
   const handleCanvasReady = useCallback(() => {

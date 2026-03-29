@@ -78,7 +78,6 @@ export function useStarmapData(): StarmapData {
         const normalized = normalizeCoordinates(sysMap);
         setSystems(sysMap);
         setCoords(normalized);
-        console.log(`[Starmap] Loaded ${sysMap.size} systems`);
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "Failed to load systems");

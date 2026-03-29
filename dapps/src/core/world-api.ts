@@ -56,9 +56,7 @@ export async function getSolarSystemMap(): Promise<Map<number, SolarSystem>> {
   }
 
   solarSystemPromise = (async () => {
-    console.log("[WorldAPI] Fetching all solar systems...");
     const systems = await fetchAllPages<SolarSystem>("/v2/solarsystems", 1000);
-    console.log(`[WorldAPI] Cached ${systems.length} solar systems`);
     await setCache("solarsystems", systems);
     solarSystemMap = new Map(systems.map((s) => [s.id, s]));
     solarSystemPromise = null;
@@ -98,9 +96,7 @@ export async function getTribeMap(): Promise<Map<number, Tribe>> {
   }
 
   tribePromise = (async () => {
-    console.log("[WorldAPI] Fetching all tribes...");
     const tribes = await fetchAllPages<Tribe>("/v2/tribes", 500);
-    console.log(`[WorldAPI] Cached ${tribes.length} tribes`);
     await setCache("tribes", tribes);
     tribeMap = new Map(tribes.map((t) => [t.id, t]));
     tribePromise = null;
@@ -140,9 +136,7 @@ export async function getShipMap(): Promise<Map<number, Ship>> {
   }
 
   shipPromise = (async () => {
-    console.log("[WorldAPI] Fetching all ships...");
     const ships = await fetchAllPages<Ship>("/v2/ships", 500);
-    console.log(`[WorldAPI] Cached ${ships.length} ships`);
     await setCache("ships", ships);
     shipMap = new Map(ships.map((s) => [s.id, s]));
     shipPromise = null;
@@ -178,9 +172,7 @@ export async function getItemTypeMap(): Promise<Map<number, ItemType>> {
   }
 
   typePromise = (async () => {
-    console.log("[WorldAPI] Fetching all item types...");
     const types = await fetchAllPages<ItemType>("/v2/types", 500);
-    console.log(`[WorldAPI] Cached ${types.length} item types`);
     await setCache("types", types);
     typeMap = new Map(types.map((t) => [t.id, t]));
     typePromise = null;

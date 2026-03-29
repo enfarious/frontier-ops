@@ -10,6 +10,7 @@ import {
   energyUtilization,
   type NetworkNodeData,
 } from "../../core/network-node-data";
+import { loadRecipeData, findRecipes, expandToRawMaterials } from "../../core/recipe-data";
 
 /** Assembly data from the app's hooks */
 export interface AssemblyData {
@@ -19,6 +20,7 @@ export interface AssemblyData {
   typeId: number;
   state: string;
   moveType: string;
+  ownerName?: string;
   ownerCapId?: string;
   energySourceId?: string;
   fuel?: {
@@ -82,6 +84,14 @@ export async function executeTool(
       return getContacts(context);
     case "get_roles":
       return getRoles(context);
+    case "lookup_recipe":
+      return await lookupRecipe(args.item as string);
+    case "get_full_bill_of_materials":
+      return await getFullBOM(args.item as string, (args.quantity as number) ?? 1);
+    case "list_raw_materials":
+      return await listRawMaterials();
+    case "lookup_refinery":
+      return await lookupRefinery(args.item as string);
     case "set_power":
       return setPower(args.item_id as string, args.action as string, context);
     case "rename_assembly":
@@ -123,21 +133,21 @@ function listAssemblies(ctx: ToolExecutorContext, filter?: string): { result: st
   const lines = items.map(a => {
     const type = classifyAssembly(a);
     const name = a.name || "Unnamed";
-    return `- ${name} [${type}] — ${a.state.toUpperCase()} (item: ${a.itemId})`;
+    return `- ${name} [${type}] — ${a.state.toUpperCase()} (id: ${a.itemId})`;
   });
 
   return { result: `${items.length} assemblies:\n${lines.join("\n")}` };
 }
 
 function getAssemblyDetails(ctx: ToolExecutorContext, itemId: string): { result: string } {
-  const a = ctx.assemblies.find(x => x.itemId === itemId);
-  if (!a) return { result: `Assembly with item ID ${itemId} not found.` };
+  const a = ctx.assemblies.find(x => x.itemId === itemId)
+    ?? ctx.assemblies.find(x => x.name.toLowerCase() === itemId.toLowerCase());
+  if (!a) return { result: `Assembly "${itemId}" not found. Use list_assemblies to see available assemblies and their IDs.` };
 
   const lines = [
     `Name: ${a.name || "Unnamed"}`,
     `Type: ${classifyAssembly(a)}`,
     `Status: ${a.state.toUpperCase()}`,
-    `Item ID: ${a.itemId}`,
     `Object ID: ${a.id}`,
     `Type ID: ${a.typeId}`,
   ];
@@ -158,7 +168,7 @@ async function getNetworkNodeFuel(ctx: ToolExecutorContext, itemId?: string): Pr
     if (nodes.length === 0) return { result: "No network nodes found." };
 
     let filtered = nodes;
-    if (itemId) filtered = nodes.filter(n => n.itemId === itemId);
+    if (itemId) filtered = nodes.filter(n => n.itemId === itemId || n.id === itemId);
 
     const lines = filtered.map(n => {
       const fuelPct = n.fuel.maxCapacity > 0
@@ -167,7 +177,7 @@ async function getNetworkNodeFuel(ctx: ToolExecutorContext, itemId?: string): Pr
       const hoursLeft = estimateFuelHours(n);
       const utilPct = energyUtilization(n);
       const parts = [
-        `Network Node (${n.itemId}) — ${n.status.toUpperCase()}`,
+        `Network Node — ${n.status.toUpperCase()} (id: ${n.id}, eve_item_id: ${n.itemId})`,
         `  Fuel: ${n.fuel.quantity}/${n.fuel.maxCapacity} (${fuelPct}%) | Burning: ${n.fuel.isBurning}`,
       ];
       if (hoursLeft !== null) {
@@ -254,15 +264,162 @@ function getRoles(ctx: ToolExecutorContext): { result: string } {
   return { result: `${ctx.roles.length} roles:\n${lines.join("\n")}` };
 }
 
+// === CRAFTING & INDUSTRY ===
+
+async function lookupRecipe(item: string): Promise<{ result: string }> {
+  try {
+    const data = await loadRecipeData();
+    const recipes = findRecipes(data, item);
+    if (recipes.length === 0) {
+      return { result: `No recipe found for "${item}". Use list_raw_materials to see base resources.` };
+    }
+    const lines = recipes.map(r => {
+      const inputs = r.inputs.map(i => `${i.name} x${i.qty}${i.isRaw ? " [raw]" : ""}`).join(", ");
+      return `${r.outputName} x${r.outputQty} (${r.runTime}s)\n  Requires: ${inputs}`;
+    });
+    return { result: lines.join("\n\n") };
+  } catch {
+    return { result: "Recipe data unavailable." };
+  }
+}
+
+async function getFullBOM(item: string, quantity: number): Promise<{ result: string }> {
+  try {
+    const data = await loadRecipeData();
+    const recipes = findRecipes(data, item);
+    if (recipes.length === 0) {
+      return { result: `No recipe found for "${item}".` };
+    }
+    const recipe = recipes[0];
+    const bom = expandToRawMaterials(data, recipe.outputId, quantity);
+    if (bom.size === 0) {
+      return { result: `${recipe.outputName} has no sub-components — it is a raw material itself.` };
+    }
+
+    const lines: string[] = [];
+    for (const entry of [...bom.values()].sort((a, b) => b.qty - a.qty)) {
+      if (entry.refineryOptions && entry.refineryOptions.length > 0) {
+        // Refinery-sourced intermediate: show all ore alternatives
+        lines.push(`  ${entry.name}: ${entry.qty.toLocaleString()} needed — refine from (pick one):`);
+        for (const opt of entry.refineryOptions) {
+          lines.push(`    • ${opt.name}: ${opt.qty.toLocaleString()} units  (${opt.qtyPerSource}/unit)`);
+        }
+      } else {
+        lines.push(`  ${entry.name}: ${entry.qty.toLocaleString()}`);
+      }
+    }
+
+    return {
+      result: `Raw materials to produce ${quantity}x ${recipe.outputName}:\n${lines.join("\n")}`,
+    };
+  } catch {
+    return { result: "Recipe data unavailable." };
+  }
+}
+
+async function lookupRefinery(item: string): Promise<{ result: string }> {
+  try {
+    const data = await loadRecipeData();
+    const q = item.toLowerCase();
+    const numId = parseInt(item);
+    const sections: string[] = [];
+
+    const matchesId = (id: number) => (!isNaN(numId) && id === numId);
+    const matchesName = (name: string) => name.toLowerCase().includes(q);
+    const matches = (id: number, name: string) => matchesId(id) || matchesName(name);
+
+    // 1. If it's a refinery SOURCE → show what it yields when refined
+    const asSource = data.refinery.filter(e => matches(e.sourceId, e.sourceName));
+    if (asSource.length > 0) {
+      const lines = asSource.map(e => {
+        const outs = e.outputs.map(o => `${o.qty}x ${o.name}`).join(", ");
+        return `  Refine 1x ${e.sourceName} → ${outs}`;
+      });
+      sections.push(`REFINERY (yields when refined):\n${lines.join("\n")}`);
+    }
+
+    // 2. If it's a refinery OUTPUT → show which ores/materials produce it
+    const allRefineryOutputs = data.refinery.flatMap(e => e.outputs);
+    const asRefineryOutput = allRefineryOutputs.filter(o => matches(o.id, o.name));
+    if (asRefineryOutput.length > 0) {
+      const seen = new Set<number>();
+      const lines: string[] = [];
+      for (const out of asRefineryOutput) {
+        if (seen.has(out.id)) continue;
+        seen.add(out.id);
+        const sources = data.refinery.filter(e => e.outputs.some(o => o.id === out.id));
+        sources.forEach(s => {
+          const qty = s.outputs.find(o => o.id === out.id)!.qty;
+          lines.push(`  1x ${s.sourceName} → ${qty}x ${out.name}`);
+        });
+      }
+      sections.push(`OBTAINED BY REFINING:\n${lines.join("\n")}`);
+    }
+
+    // 3. If it's used as INPUT in blueprints → show what gets produced
+    const asInput = data.recipes.filter(r =>
+      r.inputs.some(i => matches(i.id, i.name)),
+    );
+    if (asInput.length > 0) {
+      const lines = asInput.map(r => {
+        const ins = r.inputs.map(i => `${i.qty}x ${i.name}`).join(", ");
+        const outs = r.allOutputs.map(o => `${o.qty}x ${o.name}`).join(", ");
+        return `  ${ins} → ${outs}`;
+      });
+      sections.push(`USED IN PROCESSING (produces):\n${lines.join("\n")}`);
+    }
+
+    // 4. Show what gets made from the OUTPUTS of any processing recipes found above
+    const processingOutputIds = new Set(asInput.flatMap(r => r.allOutputs.map(o => o.id)));
+    const furtherUsed = data.recipes.filter(r =>
+      r.inputs.some(i => processingOutputIds.has(i.id)) && !asInput.includes(r),
+    );
+    if (furtherUsed.length > 0) {
+      const lines = furtherUsed.slice(0, 8).map(r => {
+        const relevantInput = r.inputs.find(i => processingOutputIds.has(i.id))!;
+        return `  ${relevantInput.qty}x ${relevantInput.name} + ... → ${r.allOutputs.map(o => `${o.qty}x ${o.name}`).join(", ")}`;
+      });
+      sections.push(`FURTHER PROCESSED INTO:\n${lines.join("\n")}`);
+    }
+
+    if (sections.length === 0) {
+      return { result: `"${item}" not found in refinery or processing data.` };
+    }
+
+    return { result: sections.join("\n\n") };
+  } catch {
+    return { result: "Refinery data unavailable." };
+  }
+}
+
+async function listRawMaterials(): Promise<{ result: string }> {
+  try {
+    const data = await loadRecipeData();
+    const lines = data.rawMaterials.map(m => `  ${m.name} (ID: ${m.id})`);
+    return { result: `${data.rawMaterials.length} raw materials in EVE Frontier:\n${lines.join("\n")}` };
+  } catch {
+    return { result: "Recipe data unavailable." };
+  }
+}
+
 // === ON-CHAIN ACTIONS ===
+
+/** Maps classify result to Move module/type names needed by assembly actions */
+function assemblyModuleInfo(type: string): { assemblyModule: string; assemblyTypeName: string } {
+  if (type === "turret") return { assemblyModule: "turret", assemblyTypeName: "Turret" };
+  if (type === "ssu") return { assemblyModule: "storage_unit", assemblyTypeName: "StorageUnit" };
+  if (type === "gate") return { assemblyModule: "gate", assemblyTypeName: "Gate" };
+  return { assemblyModule: "assembly", assemblyTypeName: "Assembly" };
+}
 
 function setPower(
   itemId: string,
   action: string,
   ctx: ToolExecutorContext,
 ): { result: string; pendingAction?: PendingAction } {
-  const a = ctx.assemblies.find(x => x.itemId === itemId);
-  if (!a) return { result: `Assembly ${itemId} not found.` };
+  const a = ctx.assemblies.find(x => x.itemId === itemId)
+    ?? ctx.assemblies.find(x => x.name.toLowerCase() === itemId.toLowerCase());
+  if (!a) return { result: `Assembly "${itemId}" not found. Use list_assemblies to see available assemblies.` };
 
   const name = a.name || `Assembly ${a.itemId}`;
   const type = classifyAssembly(a);
@@ -272,7 +429,13 @@ function setPower(
     pendingAction: {
       type: "power",
       description: `Bring ${name} ${action}`,
-      params: { itemId, objectId: a.id, action, assemblyType: type },
+      params: {
+        objectId: a.id,
+        ownerCapId: a.ownerCapId,
+        energySourceId: a.energySourceId,
+        action,
+        ...assemblyModuleInfo(type),
+      },
     },
   };
 }
@@ -282,16 +445,23 @@ function renameAssembly(
   newName: string,
   ctx: ToolExecutorContext,
 ): { result: string; pendingAction?: PendingAction } {
-  const a = ctx.assemblies.find(x => x.itemId === itemId);
-  if (!a) return { result: `Assembly ${itemId} not found.` };
+  const a = ctx.assemblies.find(x => x.itemId === itemId)
+    ?? ctx.assemblies.find(x => x.name.toLowerCase() === itemId.toLowerCase());
+  if (!a) return { result: `Assembly "${itemId}" not found. Use list_assemblies to see available assemblies.` };
 
+  const type = classifyAssembly(a);
   const oldName = a.name || "Unnamed";
   return {
     result: `Ready to rename "${oldName}" → "${newName}". Awaiting confirmation.`,
     pendingAction: {
       type: "rename",
       description: `Rename "${oldName}" to "${newName}"`,
-      params: { itemId, objectId: a.id, newName },
+      params: {
+        objectId: a.id,
+        ownerCapId: a.ownerCapId,
+        newName,
+        ...assemblyModuleInfo(type),
+      },
     },
   };
 }

@@ -63,7 +63,6 @@ export function useNetworkNodes() {
       const cacheKey = `tribe-network-nodes:${tribeId}:${membersToScan.length}`;
       const cached = await getFromCache<NodeListItem[]>(cacheKey, TTL.TRIBE_ASSEMBLIES);
       if (cached) {
-        console.log(`[FrontierOps] Tribe network nodes from cache: ${cached.length}`);
         return cached;
       }
 

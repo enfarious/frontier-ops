@@ -98,7 +98,6 @@ export async function fetchOnChainListings(): Promise<OnChainListing[]> {
     });
 
     cache = { listings, fetchedAt: Date.now() };
-    console.log(`[IntelMarket] Fetched ${listings.length} on-chain listings`);
     return listings;
   } catch (err) {
     console.error("[IntelMarket] Failed to fetch on-chain listings:", err);

@@ -3,7 +3,8 @@ import {
   getCharacterAndOwnedObjects,
   executeGraphQLQuery,
 } from "@evefrontier/dapp-kit";
-import { getFromCache, setCache, TTL } from "./cache";
+import { getFromCache, setCache, clearCache, TTL } from "./cache";
+import { ASSEMBLY_TYPE_NAMES } from "./assembly-type-ids";
 
 const WORLD_PKG = "0x28b497559d65ab320d9da4613bf2498d5946b2c0ae3597ccfda3072ce127448c";
 
@@ -62,7 +63,7 @@ function parseAssemblyFromJson(
   const typeId = Number(json.type_id ?? json.typeId ?? 0);
   const idStr = (json.id as string) || "";
   const metadataName = (json.metadata as any)?.name as string | undefined;
-  const name = metadataName || (json.name as string) || `Assembly ${typeId}`;
+  const name = metadataName || (json.name as string) || ASSEMBLY_TYPE_NAMES[typeId] || `Assembly ${typeId}`;
 
   const statusObj = json.status as Record<string, unknown> | undefined;
   const innerStatus = statusObj?.status as Record<string, unknown> | undefined;
@@ -106,7 +107,6 @@ async function fetchTypedObjects(
       });
 
       const capNodes = capsResult.data?.address?.objects?.nodes ?? [];
-      console.log(`[FrontierOps] Found ${capNodes.length} ${label} OwnerCaps`);
 
       for (const capNode of capNodes) {
         const capJson = capNode?.contents?.json as Record<string, unknown> | undefined;
@@ -123,7 +123,6 @@ async function fetchTypedObjects(
 
           const typeRepr = (objContents.type?.repr as string) ?? "";
           const assembly = parseAssemblyFromJson(objContents.json, typeRepr, walletAddress, ownerName);
-          console.log(`[FrontierOps] ${label} found: id=${assembly.id}, state=${assembly.state}, moveType=${typeRepr}`);
           results.push(assembly);
         } catch (err) {
           console.error(`[FrontierOps] Error fetching ${label} ${authorizedObjectId}:`, err);
@@ -141,28 +140,69 @@ async function fetchTypedObjects(
  * Standalone fetch function for assemblies owned by a wallet address.
  * Exported so it can be reused by useScopedAssemblies for tribe mode.
  */
-export async function fetchAssembliesForWallet(walletAddress: string): Promise<AssemblyData[]> {
-  // Try localStorage cache first
-  const cacheKey = `assemblies:${walletAddress}`;
-  const cached = await getFromCache<AssemblyData[]>(cacheKey, TTL.ASSEMBLIES);
+/**
+ * Ensures the character ID is in localStorage for the given wallet address.
+ * Reads from IndexedDB cache if available, otherwise resolves from chain.
+ * Call before any action that requires the character ID.
+ */
+/** Bust the assembly cache for a wallet so the next fetch goes to chain. */
+export async function invalidateAssemblyCache(walletAddress: string): Promise<void> {
+  await clearCache(`assemblies:${walletAddress}`);
+  try { localStorage.removeItem("frontier-ops-assemblies-cache"); } catch {}
+}
+
+export async function ensureCharacterId(walletAddress: string): Promise<string | null> {
+  const existing = localStorage.getItem("frontier-ops-character-id");
+  if (existing) return existing;
+
+  const charIdKey = `charId:${walletAddress}`;
+  const cached = await getFromCache<string>(charIdKey, TTL.REFERENCE);
   if (cached) {
-    console.log(`[FrontierOps] Assemblies loaded from cache (${walletAddress.slice(0, 8)}…): ${cached.length} items`);
+    localStorage.setItem("frontier-ops-character-id", cached);
     return cached;
   }
 
-  console.log("[FrontierOps] Querying character assemblies for:", walletAddress);
+  // Resolve from chain
+  const result = await getCharacterAndOwnedObjects(walletAddress);
+  const profileNode = result.data?.address?.objects?.nodes?.[0];
+  const characterAddress =
+    (profileNode?.contents?.extract?.asAddress?.asObject as any)?.address as string | undefined;
+  const characterJson =
+    profileNode?.contents?.extract?.asAddress?.asObject?.asMoveObject?.contents?.json as any;
+  const charAddr = characterAddress || (characterJson?.id as string) || null;
+
+  if (charAddr) {
+    localStorage.setItem("frontier-ops-character-id", charAddr);
+    await setCache(charIdKey, charAddr);
+  }
+
+  return charAddr;
+}
+
+export async function fetchAssembliesForWallet(walletAddress: string): Promise<AssemblyData[]> {
+  const cacheKey = `assemblies:${walletAddress}`;
+  const charIdKey = `charId:${walletAddress}`;
+
+  const cached = await getFromCache<AssemblyData[]>(cacheKey, TTL.ASSEMBLIES);
+  if (cached) {
+    // Restore localStorage entries that may have been cleared
+    try {
+      localStorage.setItem("frontier-ops-assemblies-cache", JSON.stringify(cached));
+      const cachedCharId = await getFromCache<string>(charIdKey, TTL.REFERENCE);
+      if (cachedCharId) localStorage.setItem("frontier-ops-character-id", cachedCharId);
+    } catch {}
+    return cached;
+  }
 
   const result = await getCharacterAndOwnedObjects(walletAddress);
   const data = result.data;
 
   if (!data) {
-    console.warn("[FrontierOps] No data returned from getCharacterAndOwnedObjects");
     return [];
   }
 
   const profileNode = data.address?.objects?.nodes?.[0];
   if (!profileNode) {
-    console.warn("[FrontierOps] No PlayerProfile found for this wallet");
     return [];
   }
 
@@ -176,12 +216,10 @@ export async function fetchAssembliesForWallet(walletAddress: string): Promise<A
   const ownerName = (characterJson?.name as string) ??
     ((characterJson?.metadata as any)?.name as string) ?? undefined;
 
-  console.log("[FrontierOps] Character:", ownerName, "at", characterAddress);
 
   const ownerCapNodes =
     profileNode.contents?.extract?.asAddress?.objects?.nodes ?? [];
 
-  console.log("[FrontierOps] OwnerCap nodes count:", ownerCapNodes.length);
 
   const assemblies: AssemblyData[] = [];
 
@@ -227,14 +265,17 @@ export async function fetchAssembliesForWallet(walletAddress: string): Promise<A
     return true;
   });
 
-  console.log(`[FrontierOps] Total assemblies: ${assemblies.length}, unique: ${unique.length}`, unique);
 
   // Cache the results
   await setCache(cacheKey, unique);
+  if (charAddr) await setCache(charIdKey, charAddr);
 
-  // Also cache for Mission Control LLM access
+  // Also cache for Mission Control LLM access and other hooks
   try {
     localStorage.setItem("frontier-ops-assemblies-cache", JSON.stringify(unique));
+    if (charAddr) {
+      localStorage.setItem("frontier-ops-character-id", charAddr);
+    }
   } catch {}
 
   return unique;

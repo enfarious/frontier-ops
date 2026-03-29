@@ -257,7 +257,7 @@ function ModuleNavItem({
       onDragEnd={onDragEnd}
       onClick={onClick}
       style={{
-        cursor: "grab",
+        cursor: "pointer",
         borderRadius: 4,
         backgroundColor: active
           ? "var(--color-button-background)"
@@ -267,7 +267,7 @@ function ModuleNavItem({
       }}
     >
       <DragHandleDots2Icon
-        style={{ opacity: 0.4, flexShrink: 0 }}
+        style={{ opacity: 0.4, flexShrink: 0, cursor: "grab" }}
       />
       <Icon />
       <Text size="2">{module.name}</Text>

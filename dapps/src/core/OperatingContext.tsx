@@ -66,7 +66,6 @@ export function OperatingContextProvider({
           tribeUrl: data.tribe.tribeUrl,
         });
         setTribeRoster(data.members);
-        console.log(`[FrontierOps] Tribe loaded: ${data.tribe.name} (${data.members.length} members)`);
       }
 
       setTribeLoading(false);

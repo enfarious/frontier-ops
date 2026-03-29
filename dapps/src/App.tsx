@@ -12,12 +12,10 @@ function isEmbeddedMode(): boolean {
   const params = new URLSearchParams(window.location.search);
   // Game passes itemId as query param
   if (params.has("itemId") || params.has("item_id")) {
-    console.log("[FrontierOps] Embedded mode: query param detected");
     return true;
   }
   // Or explicitly opt in via ?embedded=true
   if (params.has("embedded")) {
-    console.log("[FrontierOps] Embedded mode: explicit param");
     return true;
   }
   return false;

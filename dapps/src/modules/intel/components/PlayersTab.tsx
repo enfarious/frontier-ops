@@ -9,7 +9,17 @@ interface Props {
   onSelect: (id: string) => void;
 }
 
-type SortKey = "threat" | "kills" | "deaths" | "kd" | "name";
+type SortKey = "threat" | "kills" | "deaths" | "kd" | "name" | "last";
+
+function formatLastSeen(ts: number): string {
+  if (!ts) return "—";
+  const days = (Date.now() - ts) / (24 * 60 * 60 * 1000);
+  if (days < 1) return "today";
+  if (days < 2) return "yesterday";
+  if (days < 30) return `${Math.floor(days)}d ago`;
+  if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+  return `${Math.floor(days / 365)}y ago`;
+}
 
 export function PlayersTab({ players, onSelect }: Props) {
   const [search, setSearch] = useState("");
@@ -34,6 +44,7 @@ export function PlayersTab({ players, onSelect }: Props) {
         case "deaths": return b.deaths - a.deaths;
         case "kd": return b.kdRatio - a.kdRatio;
         case "name": return a.playerName.localeCompare(b.playerName);
+        case "last": return b.lastSeenTimestamp - a.lastSeenTimestamp;
       }
     });
 
@@ -76,6 +87,9 @@ export function PlayersTab({ players, onSelect }: Props) {
               <Table.ColumnHeaderCell style={headerStyle("kd")} onClick={() => setSortBy("kd")}>
                 K/D
               </Table.ColumnHeaderCell>
+              <Table.ColumnHeaderCell style={headerStyle("last")} onClick={() => setSortBy("last")}>
+                Last Seen
+              </Table.ColumnHeaderCell>
               <Table.ColumnHeaderCell style={headerStyle("threat")} onClick={() => setSortBy("threat")}>
                 Threat
               </Table.ColumnHeaderCell>
@@ -106,6 +120,9 @@ export function PlayersTab({ players, onSelect }: Props) {
                 </Table.Cell>
                 <Table.Cell>
                   <Text size="2" weight="bold">{p.kdRatio}</Text>
+                </Table.Cell>
+                <Table.Cell>
+                  <Text size="1" color="gray">{formatLastSeen(p.lastSeenTimestamp)}</Text>
                 </Table.Cell>
                 <Table.Cell>
                   <Badge size="1" color={threatColor(p.threatLevel)}>

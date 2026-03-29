@@ -124,12 +124,10 @@ export default function TradecraftPage() {
       const sellerTribe = tribe?.name ?? "";
       const tx = buildCreateListingTx(pkg.title, pkg.description, priceMist, visibility, sellerTribe, payloadJson);
       const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-      console.log("[Tradecraft] Tx result:", JSON.stringify(result, null, 2));
       let onChainId = extractCreatedObjectId(result);
 
       // Fallback: query chain for matching listing if extraction failed
       if (!onChainId) {
-        console.warn("[Tradecraft] Could not extract object ID from tx result, querying chain...");
         invalidateListingCache();
         await new Promise((r) => setTimeout(r, 3000)); // wait for indexer
         const listings = await fetchOnChainListings();
@@ -140,7 +138,6 @@ export default function TradecraftPage() {
       }
 
       if (onChainId) {
-        console.log("[Tradecraft] On-chain ID:", onChainId);
         await setOnChainId(pkg.id, onChainId);
       } else {
         console.error("[Tradecraft] Failed to determine on-chain ID");

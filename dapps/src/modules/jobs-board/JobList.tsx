@@ -75,7 +75,7 @@ export function JobList({ jobs, selectedId, onSelect }: JobListProps) {
               >
                 <Table.Cell>
                   <Flex align="center" gap="1">
-                    <Text size="2" truncate style={{ maxWidth: 180 }}>{job.title || "(untitled)"}</Text>
+                    <Text size="2" truncate style={{ maxWidth: 220 }}>{job.title || "(untitled)"}</Text>
                     {job.competitive && (
                       <Badge color="orange" size="1" variant="surface">
                         {job.contestants.length > 0 ? `${job.contestants.length} racing` : "Race"}

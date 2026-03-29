@@ -24,7 +24,6 @@ export function useJobEscrow() {
       setLastError(null);
       try {
         const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-        console.log("[JobEscrow] Transaction success:", result);
         return result;
       } catch (e: any) {
         console.error("[JobEscrow] Transaction failed:", e);
