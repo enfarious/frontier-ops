@@ -55,7 +55,7 @@ function App() {
 
   return (
     <Flex direction="column" style={{ height: "100vh" }}>
-      <Header />
+      <Header onShowLanding={() => setShowLanding(true)} />
       <Flex style={{ flex: 1, overflow: "hidden" }}>
         <Sidebar
           activeModuleId={activeModuleId}
