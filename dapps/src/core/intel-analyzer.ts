@@ -41,9 +41,11 @@ export function computeThreatScore(stats: {
   const confidence = kills / (kills + 20);
   const kdPts = Math.min(40, kd * confidence * 8);
 
-  // Recency: linear decay over 30 days, 0–20 pts
+  // Recency: linear decay over 30 days, 0–20 pts.
+  // Gated by kill volume so a 1-kill player seen yesterday doesn't score medium
+  // purely from recency. Full weight at 5+ kills, 20% at 1 kill.
   const daysSinceSeen = (Date.now() - lastSeenTimestamp) / DAY_MS;
-  const recencyPts = 20 * Math.max(0, 1 - daysSinceSeen / 30);
+  const recencyPts = 20 * Math.max(0, 1 - daysSinceSeen / 30) * Math.min(1, kills / 5);
 
   // Structure hunter: 0–10 pts
   const structurePts = Math.min(10, structureKills * 5);
