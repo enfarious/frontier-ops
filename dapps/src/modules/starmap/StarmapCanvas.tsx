@@ -12,6 +12,7 @@ import type { NormalizedCoord } from "./helpers/projection";
 import type { KillmailData } from "../danger-alerts/danger-types";
 import { useHeatmapData } from "./hooks/useHeatmapData";
 import { HeatmapBlobs } from "./HeatmapBlobs";
+import type { RouteResult } from "./route-planner";
 
 export interface StarmapCanvasHandle {
   navigateTo: (nx: number, nz: number, targetZoom: number) => void;
@@ -30,6 +31,7 @@ interface StarmapCanvasProps {
   heatmapCurrentTime?: number;
   heatmapWindowDuration?: number;
   heatmapEnabled?: boolean;
+  route?: RouteResult | null;
 }
 
 /** Normalize 3D coords to a centered unit cube */
@@ -488,6 +490,196 @@ function HeatmapLayer({
   return <HeatmapBlobs blobs={blobs} />;
 }
 
+// ── Route rendering helpers ─────────────────────────────────────────
+
+/**
+ * Build the full ordered list of 3D points along all route arcs.
+ * Gates get a shallow arc, jumps get a big arc.
+ * Also returns per-point base color so pulses inherit leg color.
+ */
+function buildRouteGeometry(route: RouteResult, positions: Map<number, THREE.Vector3>) {
+  const allPoints: THREE.Vector3[] = [];
+  const allColors: Array<[number, number, number]> = []; // base RGB per point
+
+  for (const leg of route.legs) {
+    const from = positions.get(leg.fromId);
+    const to = positions.get(leg.toId);
+    if (!from || !to) continue;
+
+    const isGate = leg.type === "gate_npc" || leg.type === "gate_player";
+    const dangerT = Math.min(1, leg.dangerScore / 100);
+
+    let r, g, b;
+    if (isGate) {
+      r = 0.1 + dangerT * 0.9; g = 0.5 * (1 - dangerT); b = 1.0 - dangerT * 0.8;
+    } else {
+      r = 1.0; g = 0.5 * (1 - dangerT * 0.8); b = 0.1 * (1 - dangerT);
+    }
+
+    const mid = from.clone().add(to).multiplyScalar(0.5);
+    const chord = to.clone().sub(from);
+    const chordLen = chord.length();
+    const arcFactor = isGate ? 0.08 : 0.30;
+    const arcHeight = chordLen * arcFactor;
+    const perp = new THREE.Vector3(-chord.z, 0, chord.x).normalize();
+    const legIdx = route.legs.indexOf(leg);
+    const sign = (legIdx % 2 === 0) ? 1 : -1;
+    const ctrl = mid.clone()
+      .add(perp.clone().multiplyScalar(arcHeight * sign))
+      .add(new THREE.Vector3(0, arcHeight * 0.5, 0));
+
+    const curve = new THREE.QuadraticBezierCurve3(from, ctrl, to);
+    const pts = curve.getPoints(isGate ? 10 : 20);
+    for (const p of pts) {
+      allPoints.push(p);
+      allColors.push([r, g, b]);
+    }
+  }
+
+  return { allPoints, allColors };
+}
+
+/** Dim static base track for the route */
+function RouteLine({
+  route,
+  positions,
+}: {
+  route: RouteResult;
+  positions: Map<number, THREE.Vector3>;
+}) {
+  const geometry = useMemo(() => {
+    const { allPoints, allColors } = buildRouteGeometry(route, positions);
+    if (allPoints.length < 2) return null;
+
+    const pts: number[] = [];
+    const cols: number[] = [];
+    for (let i = 0; i < allPoints.length - 1; i++) {
+      const a = allPoints[i];
+      const b = allPoints[i + 1];
+      pts.push(a.x, a.y, a.z, b.x, b.y, b.z);
+      const [r, g, bc] = allColors[i];
+      // Dim base track — pulse will provide the brightness
+      cols.push(r * 0.25, g * 0.25, bc * 0.25);
+      cols.push(r * 0.25, g * 0.25, bc * 0.25);
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
+    geo.setAttribute("color", new THREE.Float32BufferAttribute(cols, 3));
+    return geo;
+  }, [route, positions]);
+
+  if (!geometry) return null;
+
+  return (
+    <lineSegments geometry={geometry}>
+      <lineBasicMaterial vertexColors transparent opacity={1} blending={THREE.AdditiveBlending} depthWrite={false} />
+    </lineSegments>
+  );
+}
+
+/**
+ * Animated pulse that chases along the route.
+ * Three staggered pulses repeat continuously, each a bright comet
+ * with a glowing head and a fading tail.
+ */
+function RoutePulse({
+  route,
+  positions,
+}: {
+  route: RouteResult;
+  positions: Map<number, THREE.Vector3>;
+}) {
+  const NUM_PULSES = 3;
+  const PULSE_SPEED = 60;   // canvas units per second
+  const TAIL_LENGTH = 18;   // segments per tail
+
+  const routeData = useMemo(() => buildRouteGeometry(route, positions), [route, positions]);
+  const pulseOffsets = useRef(Array.from({ length: NUM_PULSES }, (_, i) => i / NUM_PULSES));
+  const meshRef = useRef<THREE.LineSegments>(null);
+  const maxSegs = NUM_PULSES * TAIL_LENGTH;
+
+  // Stable geometry created once
+  const geo = useRef((() => {
+    const g = new THREE.BufferGeometry();
+    const pos = new Float32Array(maxSegs * 2 * 3);
+    const col = new Float32Array(maxSegs * 2 * 3);
+    const pa = new THREE.BufferAttribute(pos, 3);
+    const ca = new THREE.BufferAttribute(col, 3);
+    pa.setUsage(THREE.DynamicDrawUsage);
+    ca.setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute("position", pa);
+    g.setAttribute("color", ca);
+    g.setDrawRange(0, 0);
+    return g;
+  })()).current;
+
+  useFrame((_, delta) => {
+    const { allPoints, allColors } = routeData;
+    const totalPoints = allPoints.length;
+    if (totalPoints < 2) return;
+
+    const pa = geo.attributes.position as THREE.BufferAttribute;
+    const ca = geo.attributes.color as THREE.BufferAttribute;
+    const posArr = pa.array as Float32Array;
+    const colArr = ca.array as Float32Array;
+
+    // Advance each pulse — offset is 0..1 representing position along the route.
+    // We add extra space (1 + TAIL_LENGTH/totalPoints) so the tail fully exits
+    // before the pulse restarts, preventing the wrap-around jump.
+    const loopLength = 1 + TAIL_LENGTH / totalPoints;
+    const step = (PULSE_SPEED * delta) / totalPoints;
+    for (let p = 0; p < NUM_PULSES; p++) {
+      pulseOffsets.current[p] = (pulseOffsets.current[p] + step) % loopLength;
+    }
+
+    let vi = 0;
+    for (let p = 0; p < NUM_PULSES; p++) {
+      // Only draw when pulse head is within the actual route (0..1)
+      const offset = pulseOffsets.current[p];
+      const headIdx = Math.floor(Math.min(offset, 1) * (totalPoints - 1));
+
+      for (let t = 0; t < TAIL_LENGTH; t++) {
+        const idxA = headIdx - t;
+        const idxB = headIdx - t - 1;
+        // Skip segments outside the route — no wrap
+        if (idxA < 0 || idxB < 0) break;
+        const a = allPoints[idxA];
+        const b = allPoints[idxB];
+
+        posArr[vi * 6 + 0] = a.x; posArr[vi * 6 + 1] = a.y; posArr[vi * 6 + 2] = a.z;
+        posArr[vi * 6 + 3] = b.x; posArr[vi * 6 + 4] = b.y; posArr[vi * 6 + 5] = b.z;
+
+        const brightness = Math.pow(1 - t / TAIL_LENGTH, 2);
+        const [r, g, bc] = allColors[idxA];
+        const wr = Math.min(1, r + (t === 0 ? 0.6 : 0));
+        const wg = Math.min(1, g + (t === 0 ? 0.6 : 0));
+        const wb = Math.min(1, bc + (t === 0 ? 0.8 : 0));
+
+        colArr[vi * 6 + 0] = wr * brightness; colArr[vi * 6 + 1] = wg * brightness; colArr[vi * 6 + 2] = wb * brightness;
+        colArr[vi * 6 + 3] = wr * brightness * 0.5; colArr[vi * 6 + 4] = wg * brightness * 0.5; colArr[vi * 6 + 5] = wb * brightness * 0.5;
+        vi++;
+      }
+    }
+
+    pa.needsUpdate = true;
+    ca.needsUpdate = true;
+    geo.setDrawRange(0, vi * 2);
+  });
+
+  return (
+    <lineSegments ref={meshRef} geometry={geo}>
+      <lineBasicMaterial
+        vertexColors
+        transparent
+        opacity={1}
+        blending={THREE.AdditiveBlending}
+        depthWrite={false}
+      />
+    </lineSegments>
+  );
+}
+
 function CameraController({ onReady }: { onReady?: () => void }) {
   const { camera } = useThree();
   const readyFired = useRef(false);
@@ -519,6 +711,7 @@ export const StarmapCanvas = forwardRef<StarmapCanvasHandle, StarmapCanvasProps>
     heatmapCurrentTime,
     heatmapWindowDuration,
     heatmapEnabled = true,
+    route,
   }, ref) {
     const positions = useMemo(() => normalizePositions(systems), [systems]);
     const [gatedSystems, setGatedSystems] = useState<Set<number>>(new Set());
@@ -588,6 +781,13 @@ export const StarmapCanvas = forwardRef<StarmapCanvasHandle, StarmapCanvasProps>
           />
 
           <TravelLines routes={jumpRoutes} positions={positions} />
+
+          {route && route.found && route.legs.length > 0 && (
+            <>
+              <RouteLine route={route} positions={positions} />
+              <RoutePulse route={route} positions={positions} />
+            </>
+          )}
         </Canvas>
       </div>
     );

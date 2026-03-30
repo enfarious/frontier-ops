@@ -9,6 +9,7 @@ import { PlayersTab } from "./components/PlayersTab";
 import { SystemsTab } from "./components/SystemsTab";
 import { FieldReportsTab } from "./components/FieldReportsTab";
 import { TribesTab } from "./components/TribesTab";
+import { TribeIntelTab } from "./components/TribeIntelTab";
 import { PlayerDossier } from "./components/PlayerDossier";
 import { SystemIntelCard } from "./components/SystemIntelCard";
 
@@ -48,9 +49,10 @@ export default function IntelPage() {
         <Tabs.List size="2">
           <Tabs.Trigger value="overview">Overview</Tabs.Trigger>
           <Tabs.Trigger value="players">Players</Tabs.Trigger>
+          <Tabs.Trigger value="tribe-intel">Tribes</Tabs.Trigger>
           <Tabs.Trigger value="systems">Systems</Tabs.Trigger>
           <Tabs.Trigger value="reports">Field Reports</Tabs.Trigger>
-          <Tabs.Trigger value="tribes">Tribes</Tabs.Trigger>
+          <Tabs.Trigger value="tribes">Conflicts</Tabs.Trigger>
         </Tabs.List>
 
         <div style={{ flex: 1, overflow: "auto", paddingTop: 16 }}>
@@ -67,6 +69,13 @@ export default function IntelPage() {
             <PlayersTab
               players={intel.playerMap}
               onSelect={setSelectedPlayerId}
+            />
+          </Tabs.Content>
+
+          <Tabs.Content value="tribe-intel">
+            <TribeIntelTab
+              tribeProfiles={intel.tribeProfiles}
+              onSelectPlayer={setSelectedPlayerId}
             />
           </Tabs.Content>
 

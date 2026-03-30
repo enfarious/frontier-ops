@@ -6,6 +6,8 @@ import { useKillmails } from "../danger-alerts/hooks/useKillmails";
 import { StarmapCanvas, type StarmapCanvasHandle } from "./StarmapCanvas";
 import { SystemInfoPanel } from "./SystemInfoPanel";
 import { TimeSlider } from "./TimeSlider";
+import { RoutePlannerPanel } from "./RoutePlannerPanel";
+import type { RouteResult } from "./route-planner";
 
 const HOME_SYSTEM_KEY = "frontier-ops:home-system";
 
@@ -37,6 +39,8 @@ export default function StarmapPage() {
   const [heatmapPlaying, setHeatmapPlaying] = useState(false);
   const [heatmapSpeed, setHeatmapSpeed] = useState(1);
   const [heatmapEnabled] = useState(true);
+  const [showRoutePlanner, setShowRoutePlanner] = useState(false);
+  const [activeRoute, setActiveRoute] = useState<RouteResult | null>(null);
 
   // Time range from killmail data
   const DAY_MS = 86400_000;
@@ -211,9 +215,47 @@ export default function StarmapPage() {
           )}
         </Flex>
 
-        <Text size="1" color="gray" style={{ width: 180, flexShrink: 0, textAlign: "right", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {selectedSys ? `Selected: ${selectedSys.name}` : hoveredSys ? hoveredSys.name : `${systems.size} systems`}
-        </Text>
+        <Flex gap="2" align="center">
+          <Text
+            size="1"
+            title={savedHome ? `Return to ${systems.get(savedHome)?.name ?? "home"}` : "No home system set"}
+            style={{
+              cursor: savedHome ? "pointer" : "not-allowed",
+              fontFamily: "monospace",
+              letterSpacing: "0.05em",
+              padding: "3px 10px",
+              border: "1px solid var(--gray-a6)",
+              borderRadius: 4,
+              color: savedHome ? "var(--gray-11)" : "var(--gray-a7)",
+              background: "transparent",
+              userSelect: "none",
+              opacity: savedHome ? 1 : 0.4,
+            }}
+            onClick={() => savedHome && navigateToSystem(savedHome)}
+          >
+            ⌂ HOME
+          </Text>
+          <Text
+            size="1"
+            style={{
+              cursor: "pointer",
+              fontFamily: "monospace",
+              letterSpacing: "0.05em",
+              padding: "3px 10px",
+              border: `1px solid ${showRoutePlanner ? "var(--accent-8)" : "var(--gray-a6)"}`,
+              borderRadius: 4,
+              color: showRoutePlanner ? "var(--accent-11)" : "var(--gray-11)",
+              background: showRoutePlanner ? "var(--accent-2)" : "transparent",
+              userSelect: "none",
+            }}
+            onClick={() => setShowRoutePlanner(v => !v)}
+          >
+            ⊕ ROUTE
+          </Text>
+          <Text size="1" color="gray" style={{ width: 160, textAlign: "right", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {selectedSys ? `Selected: ${selectedSys.name}` : hoveredSys ? hoveredSys.name : `${systems.size} systems`}
+          </Text>
+        </Flex>
       </Flex>
 
       <Box ref={mapContainerRef} style={{ flex: 1, position: "relative", minHeight: 0 }}>
@@ -234,7 +276,29 @@ export default function StarmapPage() {
           heatmapCurrentTime={heatmapCurrentTime}
           heatmapWindowDuration={heatmapWindowDuration}
           heatmapEnabled={heatmapEnabled}
+          route={activeRoute}
         />
+
+        {/* Route Planner Panel */}
+        {showRoutePlanner && (
+          <Box
+            style={{
+              position: "absolute",
+              top: 12,
+              right: 12,
+              zIndex: 60,
+              pointerEvents: "auto",
+            }}
+          >
+            <RoutePlannerPanel
+              systems={systems}
+              killmails={killmails ?? []}
+              selectedSystem={selectedSystem}
+              onRouteChange={setActiveRoute}
+              onClose={() => setShowRoutePlanner(false)}
+            />
+          </Box>
+        )}
 
         {/* Floating info overlay */}
         {selectedSystem != null && selectedSys && (
