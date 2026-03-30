@@ -12,6 +12,7 @@ import {
   rankSystemsByThreat,
   findKnownAssociates,
 } from "../../../core/intel-analyzer";
+import { analyzeTribeProfiles } from "../components/TribeIntelTab";
 import type {
   PlayerProfile,
   SystemThreat,
@@ -24,6 +25,7 @@ export function useIntelAnalysis(killmails: KillmailData[] | undefined) {
   const playerMap = useMemo(() => analyzeAllPlayers(kms), [kms]);
   const systemMap = useMemo(() => analyzeAllSystems(kms), [kms]);
   const tribeConflicts = useMemo(() => analyzeTribeConflicts(kms), [kms]);
+  const tribeProfiles = useMemo(() => analyzeTribeProfiles(kms, playerMap), [kms, playerMap]);
   const topThreats = useMemo(() => rankPlayersByThreat(kms, 10), [kms]);
   const hotSystems = useMemo(() => rankSystemsByThreat(kms, 10), [kms]);
 
@@ -46,6 +48,7 @@ export function useIntelAnalysis(killmails: KillmailData[] | undefined) {
     playerMap,
     systemMap,
     tribeConflicts,
+    tribeProfiles,
     topThreats,
     hotSystems,
     getPlayerProfile,

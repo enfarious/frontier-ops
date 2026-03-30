@@ -751,6 +751,16 @@ function MarkdownText({ content }: { content: string }) {
       continue;
     }
     // Headings
+    const h4 = line.match(/^####\s+(.+)/);
+    if (h4) {
+      flushList();
+      elements.push(
+        <div key={key++} style={{ fontWeight: 600, fontSize: "0.8em", letterSpacing: "0.04em", color: "var(--accent-10)", marginTop: 6, marginBottom: 2 }}>
+          <InlineMarkdown text={h4[1]} />
+        </div>
+      );
+      continue;
+    }
     const h3 = line.match(/^###\s+(.+)/);
     if (h3) {
       flushList();
