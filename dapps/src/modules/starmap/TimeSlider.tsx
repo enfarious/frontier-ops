@@ -62,9 +62,11 @@ const labelStyle: React.CSSProperties = {
   fontFamily: "monospace",
   color: "#555",
   fontSize: 10,
-  whiteSpace: "nowrap",
+  whiteSpace: "pre",
   textTransform: "uppercase",
   letterSpacing: "0.05em",
+  lineHeight: 1.2,
+  textAlign: "center",
 };
 
 const dateInputStyle: React.CSSProperties = {
@@ -219,7 +221,7 @@ export function TimeSlider({
 
           {/* Speed */}
           <Flex align="center" gap="1">
-            <span style={labelStyle}>speed</span>
+            <span style={labelStyle}>Play{"\n"}Speed</span>
             <select
               value={playbackSpeed}
               onChange={(e) => onPlaybackSpeedChange(Number(e.target.value))}
@@ -233,7 +235,7 @@ export function TimeSlider({
 
           {/* Kill glow duration */}
           <Flex align="center" gap="1">
-            <span style={labelStyle}>duration</span>
+            <span style={labelStyle}>Heat{"\n"}Duration</span>
             <select
               value={killDuration}
               onChange={(e) => onKillDurationChange(Number(e.target.value))}

@@ -1,6 +1,20 @@
 /**
  * Pure utility functions for computing heatmap blob data from killmails.
  * No React, no side effects.
+ *
+ * Two-layer heat model:
+ *
+ *   FLARE  — based on the most recent kill in the system.
+ *            White-hot for 30min, fully faded by 2h.
+ *            Always visible regardless of duration setting —
+ *            a fresh kill is always a flare even on a 1h window.
+ *
+ *   HEAT   — based on accumulated kill volume across the full
+ *            duration window. Fades linearly over the window.
+ *            Represents a system's ongoing danger reputation.
+ *
+ * Final blob color/opacity blends both layers, taking whichever
+ * is brighter at each point.
  */
 
 import * as THREE from "three";
@@ -17,10 +31,10 @@ export interface HeatmapBlobData {
 }
 
 const HOUR = 3600_000;
+const MIN  = 60_000;
 
 // ─── Loss Weight ─────────────────────────────────────────────────────
 
-/** Weight a kill by what was destroyed. Structures >> ships. */
 export function getLossWeight(lossType: string): number {
   const upper = lossType.toUpperCase();
   if (
@@ -30,65 +44,64 @@ export function getLossWeight(lossType: string): number {
     upper.includes("NODE") ||
     upper.includes("GATE") ||
     upper.includes("TURRET")
-  ) {
-    return 10;
-  }
-  // Battleship-class hints
+  ) return 10;
   if (upper.includes("BATTLE") || upper.includes("CAPITAL")) return 5;
-  // Default ship
   return 2;
 }
 
-// ─── Recency → Color ────────────────────────────────────────────────
+// ─── Flare layer (mostRecent age) ────────────────────────────────────
 
-/** Map age in ms to a color on the hot-to-cold gradient. */
-export function recencyColor(ageMs: number): THREE.Color {
-  if (ageMs < 1 * HOUR) {
-    // White-hot → bright red
-    const t = ageMs / HOUR;
-    return new THREE.Color(1.0, 0.95 - t * 0.65, 0.9 - t * 0.85);
-  }
-  if (ageMs < 6 * HOUR) {
-    // Bright red → orange
-    const t = (ageMs - HOUR) / (5 * HOUR);
-    return new THREE.Color(1.0, 0.3 + t * 0.2, 0.05 + t * 0.05);
-  }
-  if (ageMs < 24 * HOUR) {
-    // Orange → warm amber
-    const t = (ageMs - 6 * HOUR) / (18 * HOUR);
-    return new THREE.Color(0.9 - t * 0.3, 0.5 - t * 0.15, 0.1 + t * 0.2);
-  }
-  if (ageMs < 72 * HOUR) {
-    // Amber → cool blue
-    const t = (ageMs - 24 * HOUR) / (48 * HOUR);
-    return new THREE.Color(0.6 - t * 0.4, 0.35 - t * 0.15, 0.3 + t * 0.4);
-  }
-  // Very old — dim blue
-  return new THREE.Color(0.15, 0.15, 0.4);
+const FLARE_PEAK   = 30 * MIN;   // full brightness up to 30 min
+const FLARE_FADEOUT = 2 * HOUR;  // completely gone by 2h
+
+/** Flare opacity — spikes at kill time, fully fades in 2h */
+function flareOpacity(ageMs: number): number {
+  if (ageMs <= FLARE_PEAK) return 1.0;
+  if (ageMs >= FLARE_FADEOUT) return 0;
+  return 1.0 - (ageMs - FLARE_PEAK) / (FLARE_FADEOUT - FLARE_PEAK);
 }
 
-// ─── Recency → Opacity ──────────────────────────────────────────────
-
-/** Map age in ms to opacity 0–1. */
-export function recencyOpacity(ageMs: number): number {
-  if (ageMs < 1 * HOUR) return 0.8;
-  if (ageMs < 72 * HOUR) {
-    // Linear decay from 0.8 → 0.05 over 71 hours
-    const t = (ageMs - HOUR) / (71 * HOUR);
-    return 0.8 - t * 0.75;
+/** Flare color — white-hot → bright red → gone */
+function flareColor(ageMs: number): THREE.Color {
+  if (ageMs <= FLARE_PEAK) {
+    // White-hot
+    const t = ageMs / FLARE_PEAK;
+    return new THREE.Color(1.0, 1.0 - t * 0.7, 1.0 - t * 0.9);
   }
-  return 0;
+  // Bright red fading out
+  const t = (ageMs - FLARE_PEAK) / (FLARE_FADEOUT - FLARE_PEAK);
+  return new THREE.Color(1.0, 0.3 * (1 - t), 0.05 * (1 - t));
+}
+
+// ─── Heat layer (volume over window) ─────────────────────────────────
+
+/** Heat opacity — scales with kill volume, fades linearly over window */
+function heatOpacity(volume: number, ageOfOldestKillMs: number, windowDuration: number): number {
+  // Volume intensity: single kill (weight 2) = 0.1 base, scales up
+  const volumeT = Math.min(1, volume / 30);
+  const baseOpacity = 0.1 + volumeT * 0.6;
+
+  // Fade: how far through the window is the system's activity?
+  // Use oldest kill age as a proxy — recent activity = fresh heat
+  const ageFraction = Math.min(1, ageOfOldestKillMs / windowDuration);
+  const fadeFactor = 1 - ageFraction * 0.7; // never fully fades, min 30% of base
+
+  return baseOpacity * fadeFactor;
+}
+
+/** Heat color — warm amber through orange-red, scales with volume */
+function heatColor(volume: number): THREE.Color {
+  const t = Math.min(1, volume / 30); // 0 = single kill, 1 = heavy system
+  // Low volume: dim amber. High volume: bright orange-red.
+  return new THREE.Color(
+    0.6 + t * 0.4,   // R: 0.6 → 1.0
+    0.25 - t * 0.15, // G: 0.25 → 0.1
+    0.05,            // B: flat
+  );
 }
 
 // ─── Blob Computation ────────────────────────────────────────────────
 
-/**
- * Compute heatmap blob data from killmails within a time window.
- *
- * showAll mode: renders every kill in the window at full brightness,
- * bypassing the age-based opacity/color decay that's only meaningful
- * during timeline playback.
- */
 export function computeHeatmapBlobs(
   killmails: KillmailData[],
   positions: Map<number, THREE.Vector3>,
@@ -98,7 +111,12 @@ export function computeHeatmapBlobs(
 ): HeatmapBlobData[] {
   const windowStart = currentTime - Math.max(windowDuration, 60_000);
 
-  const systemStats = new Map<number, { volume: number; mostRecent: number }>();
+  // Per-system: accumulate volume + track most recent and oldest kill in window
+  const systemStats = new Map<number, {
+    volume: number;
+    mostRecent: number;
+    oldest: number;
+  }>();
 
   for (const km of killmails) {
     if (km.killTimestamp < windowStart || km.killTimestamp > currentTime) continue;
@@ -109,8 +127,13 @@ export function computeHeatmapBlobs(
     if (existing) {
       existing.volume += weight;
       if (km.killTimestamp > existing.mostRecent) existing.mostRecent = km.killTimestamp;
+      if (km.killTimestamp < existing.oldest) existing.oldest = km.killTimestamp;
     } else {
-      systemStats.set(sysId, { volume: weight, mostRecent: km.killTimestamp });
+      systemStats.set(sysId, {
+        volume: weight,
+        mostRecent: km.killTimestamp,
+        oldest: km.killTimestamp,
+      });
     }
   }
 
@@ -118,10 +141,10 @@ export function computeHeatmapBlobs(
 
   for (const [sysId, stats] of systemStats) {
     const pos = positions.get(sysId)!;
-    const radius = Math.min(40, Math.max(2, 3 * Math.sqrt(stats.volume)));
+    const radius = Math.min(40, Math.max(3, 3 * Math.sqrt(stats.volume)));
 
     if (showAll) {
-      // Full brightness — color by kill volume, not recency
+      // Static snapshot — color by volume, full brightness
       const intensity = Math.min(1, stats.volume / 20);
       blobs.push({
         systemId: sysId,
@@ -129,27 +152,47 @@ export function computeHeatmapBlobs(
         violenceVolume: stats.volume,
         radius,
         mostRecentKill: stats.mostRecent,
-        color: new THREE.Color(
-          0.4 + intensity * 0.6,   // red channel scales with volume
-          0.1 + intensity * 0.1,
-          0.05,
-        ),
-        opacity: 0.3 + intensity * 0.5, // 0.3 minimum so even single kills show
+        color: new THREE.Color(0.4 + intensity * 0.6, 0.1 + intensity * 0.1, 0.05),
+        opacity: 0.3 + intensity * 0.5,
       });
-    } else {
-      const age = currentTime - stats.mostRecent;
-      const opacity = recencyOpacity(age);
-      if (opacity <= 0) continue;
-      blobs.push({
-        systemId: sysId,
-        position: pos,
-        violenceVolume: stats.volume,
-        radius,
-        mostRecentKill: stats.mostRecent,
-        color: recencyColor(age),
-        opacity,
-      });
+      continue;
     }
+
+    // ── Two-layer blend ──────────────────────────────────────────────
+
+    const recentAge = currentTime - stats.mostRecent;
+    const oldestAge = currentTime - stats.oldest;
+
+    // Flare signal (mostRecent kill)
+    const fOpacity = flareOpacity(recentAge);
+    const fColor   = flareColor(recentAge);
+
+    // Heat signal (volume over window)
+    const hOpacity = heatOpacity(stats.volume, oldestAge, windowDuration);
+    const hColor   = heatColor(stats.volume);
+
+    // Blend: additive for color (clamped), max for opacity
+    // Flare dominates when fresh, heat persists afterward
+    const blendOpacity = Math.min(1, Math.max(fOpacity, hOpacity));
+    if (blendOpacity <= 0.02) continue;
+
+    // Lerp color toward flare when flare is dominant
+    const flareWeight = fOpacity / Math.max(0.001, fOpacity + hOpacity);
+    const blendColor = new THREE.Color(
+      Math.min(1, fColor.r * flareWeight + hColor.r * (1 - flareWeight)),
+      Math.min(1, fColor.g * flareWeight + hColor.g * (1 - flareWeight)),
+      Math.min(1, fColor.b * flareWeight + hColor.b * (1 - flareWeight)),
+    );
+
+    blobs.push({
+      systemId: sysId,
+      position: pos,
+      violenceVolume: stats.volume,
+      radius,
+      mostRecentKill: stats.mostRecent,
+      color: blendColor,
+      opacity: blendOpacity,
+    });
   }
 
   return blobs;
