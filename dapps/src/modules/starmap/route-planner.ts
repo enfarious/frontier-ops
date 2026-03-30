@@ -275,7 +275,7 @@ export async function planRoute(
             allNodes.set(nb.id, {
               id: nb.id,
               gCost,
-              fCost: gCost + heuristic(nbSys, destination) * (1 - dangerSlider * 0.3),
+              fCost: gCost + heuristic(nbSys, destination!) * (1 - dangerSlider * 0.3),
               parent: currentId,
               legType: nb.type,
               legDistanceLy: nb.distanceLy,
