@@ -236,7 +236,7 @@ async function saveToIDB(data: Uint8Array): Promise<void> {
 
 async function initDatabase(): Promise<Database> {
   const SQL = await initSqlJs({
-    locateFile: (file: string) => `/${file}`,
+    locateFile: (file: string) => `${import.meta.env.BASE_URL}${file}`,
   });
 
   // Try loading existing database from IndexedDB
@@ -371,7 +371,7 @@ export async function importDatabase(file: File): Promise<void> {
   const data = new Uint8Array(buffer);
 
   const SQL = await initSqlJs({
-    locateFile: (file: string) => `/${file}`,
+    locateFile: (file: string) => `${import.meta.env.BASE_URL}${file}`,
   });
 
   // Validate it's a real SQLite database
