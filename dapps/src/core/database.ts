@@ -158,6 +158,23 @@ const SCHEMA = `
     on_chain_id TEXT,
     scope TEXT NOT NULL DEFAULT 'solo'
   );
+
+  CREATE TABLE IF NOT EXISTS intel_bounties (
+    id TEXT PRIMARY KEY,
+    on_chain_id TEXT,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    category INTEGER NOT NULL DEFAULT 0,
+    target_system TEXT,
+    target_tribe TEXT,
+    reward_sui TEXT NOT NULL DEFAULT '0',
+    status TEXT NOT NULL DEFAULT 'open',
+    role TEXT NOT NULL DEFAULT 'poster',
+    encryption_key TEXT,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER,
+    scope TEXT NOT NULL DEFAULT 'solo'
+  );
 `;
 
 // ─── IndexedDB persistence ──────────────────────────────────────────
@@ -213,6 +230,7 @@ async function initDatabase(): Promise<Database> {
   try { database.run("ALTER TABLE asset_sightings ADD COLUMN planet INTEGER"); } catch { /* column already exists */ }
   try { database.run("ALTER TABLE asset_sightings ADD COLUMN lpoint INTEGER"); } catch { /* column already exists */ }
   try { database.run("ALTER TABLE intel_packages ADD COLUMN on_chain_id TEXT"); } catch { /* column already exists */ }
+  try { database.run("ALTER TABLE intel_packages ADD COLUMN encryption_key TEXT"); } catch { /* column already exists */ }
 
   return database;
 }

@@ -1,10 +1,17 @@
 /**
- * CRUD hook for intel packages + Dead Drop export.
+ * CRUD hook for intel packages + Dead Drop export + encrypted on-chain listing.
  */
 
 import { useCallback, useMemo } from "react";
 import { useSQLQuery } from "../../../core/hooks/useSQL";
 import { execute, query } from "../../../core/database";
+import {
+  generateKey,
+  encrypt,
+  decrypt,
+  hashKey,
+  keyToBase64,
+} from "../../../core/crypto";
 import type {
   IntelPackage,
   PackageItem,
@@ -19,7 +26,9 @@ import type {
 import type { FieldReport, FieldReportType, ThreatLevel } from "../../../core/intel-types";
 
 /** Import a Dead Drop JSON payload into local database. */
-export async function importDeadDrop(payload: DeadDropPayload): Promise<{ sightings: number; reports: number; watchTargets: number }> {
+export async function importDeadDrop(
+  payload: DeadDropPayload,
+): Promise<{ sightings: number; reports: number; watchTargets: number }> {
   let sightings = 0;
   let reports = 0;
   let watchTargets = 0;
@@ -101,6 +110,35 @@ export async function importDeadDrop(payload: DeadDropPayload): Promise<{ sighti
   return { sightings, reports, watchTargets };
 }
 
+/**
+ * Decrypt an encrypted Dead Drop blob and import its contents.
+ * The blob is the raw AES-256-GCM ciphertext (IV-prefixed).
+ */
+export async function importEncryptedDeadDrop(
+  encryptedBlob: Uint8Array,
+  keyBytes: Uint8Array,
+  expectedKeyHash?: Uint8Array,
+): Promise<{ sightings: number; reports: number; watchTargets: number }> {
+  // Verify key hash if provided
+  if (expectedKeyHash && expectedKeyHash.length > 0) {
+    const computed = await hashKey(keyBytes);
+    const match = computed.length === expectedKeyHash.length &&
+      computed.every((b, i) => b === expectedKeyHash[i]);
+    if (!match) {
+      throw new Error("Key hash mismatch — wrong decryption key");
+    }
+  }
+
+  const plaintext = await decrypt(encryptedBlob, keyBytes);
+  const payload: DeadDropPayload = JSON.parse(plaintext);
+
+  if (payload.version !== 1 || !payload.contents) {
+    throw new Error("Invalid Dead Drop payload format");
+  }
+
+  return importDeadDrop(payload);
+}
+
 function rowToPackage(row: any): IntelPackage {
   let contents: PackageItem[] = [];
   try {
@@ -117,6 +155,7 @@ function rowToPackage(row: any): IntelPackage {
     createdAt: row.created_at,
     listedAt: row.listed_at ?? undefined,
     onChainId: row.on_chain_id ?? undefined,
+    encryptionKey: row.encryption_key ?? undefined,
   };
 }
 
@@ -222,6 +261,16 @@ export function useIntelPackages() {
     [],
   );
 
+  const setEncryptionKey = useCallback(
+    async (id: string, keyBase64: string) => {
+      await execute(
+        "UPDATE intel_packages SET encryption_key = $key WHERE id = $id",
+        { $id: id, $key: keyBase64 },
+      );
+    },
+    [],
+  );
+
   const removePackage = useCallback(
     async (id: string) => {
       await execute("DELETE FROM intel_packages WHERE id = $id", { $id: id });
@@ -229,6 +278,7 @@ export function useIntelPackages() {
     [],
   );
 
+  /** Export package as plaintext DeadDropPayload (for local sharing). */
   const exportPackage = useCallback(
     async (packageId: string): Promise<DeadDropPayload | null> => {
       const pkgRows = await query<any>(
@@ -330,6 +380,37 @@ export function useIntelPackages() {
     [],
   );
 
+  /**
+   * Encrypt a package for on-chain listing.
+   * Generates AES-256-GCM key, encrypts the payload, computes key hash,
+   * and stores the key locally. Returns everything needed for the PTB.
+   */
+  const encryptForChain = useCallback(
+    async (packageId: string): Promise<{
+      encryptedPayload: Uint8Array;
+      encryptionKey: Uint8Array;
+      keyHash: Uint8Array;
+    } | null> => {
+      const payload = await exportPackage(packageId);
+      if (!payload) return null;
+
+      const keyBytes = await generateKey();
+      const plaintext = JSON.stringify(payload);
+      const encryptedPayload = await encrypt(plaintext, keyBytes);
+      const keyHashBytes = await hashKey(keyBytes);
+
+      // Store key locally so seller can reference it later
+      await setEncryptionKey(packageId, keyToBase64(keyBytes));
+
+      return {
+        encryptedPayload,
+        encryptionKey: keyBytes,
+        keyHash: keyHashBytes,
+      };
+    },
+    [exportPackage, setEncryptionKey],
+  );
+
   const copyDeadDrop = useCallback(async (payload: DeadDropPayload) => {
     await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
   }, []);
@@ -349,10 +430,12 @@ export function useIntelPackages() {
     addPackage,
     updatePackage,
     setOnChainId,
+    setEncryptionKey,
     addItemToPackage,
     removeItemFromPackage,
     removePackage,
     exportPackage,
+    encryptForChain,
     copyDeadDrop,
     downloadDeadDrop,
   };

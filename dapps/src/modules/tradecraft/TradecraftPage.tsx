@@ -9,6 +9,7 @@ import { useIntelPackages } from "./hooks/useIntelPackages";
 import { WatchListTab } from "./components/WatchListTab";
 import { AssetsTab } from "./components/AssetsTab";
 import { PackagesTab } from "./components/PackagesTab";
+import { BountiesTab } from "./components/BountiesTab";
 import { getSolarSystemMap, getTribeMap } from "../../core/world-api";
 import { buildCreateListingTx, buildCancelListingTx, type ListingVisibility } from "../../core/intel-market-actions";
 import { fetchOnChainListings, invalidateListingCache } from "../../core/intel-market-queries";
@@ -71,6 +72,7 @@ export default function TradecraftPage() {
     removeItemFromPackage,
     removePackage,
     exportPackage,
+    encryptForChain,
     copyDeadDrop,
     downloadDeadDrop,
   } = useIntelPackages();
@@ -107,7 +109,7 @@ export default function TradecraftPage() {
   // Auto-sync on mount and when packages change
   useEffect(() => { syncOnChain(); }, [syncOnChain]);
 
-  // On-chain actions
+  // On-chain actions — now with encryption
   const handleListOnChain = useCallback(async (pkg: IntelPackage, visibility: ListingVisibility) => {
     setTxPending(true);
     try {
@@ -116,13 +118,25 @@ export default function TradecraftPage() {
         await updatePackage(pkg.id, { status: "listed" });
       }
 
-      // Export Dead Drop payload to embed on-chain
-      const payload = await exportPackage(pkg.id);
-      const payloadJson = payload ? JSON.stringify(payload) : "";
+      // Encrypt the payload and generate sealed key material
+      const encrypted = await encryptForChain(pkg.id);
+      if (!encrypted) {
+        console.error("[Tradecraft] Failed to encrypt package for chain");
+        return;
+      }
 
       const priceMist = BigInt(Math.round(Number(pkg.askingPrice) * 1_000_000_000));
       const sellerTribe = tribe?.name ?? "";
-      const tx = buildCreateListingTx(pkg.title, pkg.description, priceMist, visibility, sellerTribe, payloadJson);
+      const tx = buildCreateListingTx(
+        pkg.title,
+        pkg.description,
+        priceMist,
+        visibility,
+        sellerTribe,
+        encrypted.encryptedPayload,
+        encrypted.encryptionKey,
+        encrypted.keyHash,
+      );
       const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
       let onChainId = extractCreatedObjectId(result);
 
@@ -148,7 +162,7 @@ export default function TradecraftPage() {
     } finally {
       setTxPending(false);
     }
-  }, [dAppKit, setOnChainId, updatePackage, exportPackage, tribe]);
+  }, [dAppKit, setOnChainId, updatePackage, encryptForChain, tribe]);
 
   const handleCancelOnChain = useCallback(async (onChainId: string) => {
     setTxPending(true);
@@ -181,6 +195,7 @@ export default function TradecraftPage() {
           <Tabs.Trigger value="watch">Watch List</Tabs.Trigger>
           <Tabs.Trigger value="assets">Assets</Tabs.Trigger>
           <Tabs.Trigger value="packages">Packages</Tabs.Trigger>
+          <Tabs.Trigger value="bounties">Bounties</Tabs.Trigger>
         </Tabs.List>
 
         <div style={{ flex: 1, overflow: "auto", paddingTop: 16 }}>
@@ -226,6 +241,10 @@ export default function TradecraftPage() {
               onCancelOnChain={handleCancelOnChain}
               isPending={txPending}
             />
+          </Tabs.Content>
+
+          <Tabs.Content value="bounties">
+            <BountiesTab />
           </Tabs.Content>
         </div>
       </Tabs.Root>
