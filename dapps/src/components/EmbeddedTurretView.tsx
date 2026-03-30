@@ -17,7 +17,9 @@ import { getItemTypeMap, type ItemType } from "../core/world-api";
 import { fetchSSUInventory } from "../core/inventory-data";
 import { fetchOnChainListings, invalidateListingCache, fetchKeyRevealedEvent, type OnChainListing } from "../core/intel-market-queries";
 import { buildPurchaseListingTx } from "../core/intel-market-actions";
-import { decrypt as aesDecrypt } from "../core/crypto";
+import { decrypt as aesDecrypt, generateKey, hashKey } from "../core/crypto";
+import { fetchOnChainBounties as fetchIntelBounties, invalidateBountyCache as invalidateIntelBountyCache, type OnChainBounty as IntelBounty } from "../core/intel-bounty-queries";
+import { buildCreateBountyTx as buildCreateIntelBountyTx, buildSubmitFulfillmentTx, buildAcceptFulfillmentTx, buildRejectFulfillmentTx, BOUNTY_CATEGORY_LABELS, type BountyCategory } from "../core/intel-bounty-actions";
 import { getCharacterMap } from "../modules/danger-alerts/hooks/useKillmails";
 
 
@@ -371,8 +373,11 @@ export function EmbeddedTurretView() {
       {/* SSU-specific: Jobs Board */}
       {isSSU && dAssembly && <EmbeddedJobsBoard ssuId={dAssembly.id} />}
 
-      {/* Bounty Board — global, shows on all assembly types */}
+      {/* Headhunting Bounties — global, shows on all assembly types */}
       <EmbeddedBountyBoard />
+
+      {/* Intel Bounties — demand-side intel requests with escrowed rewards */}
+      <EmbeddedIntelBountyBoard />
 
       {/* Intel Marketplace — shows listed intel packages for sale */}
       <EmbeddedIntelMarketplace />
@@ -1287,7 +1292,7 @@ function EmbeddedBountyBoard() {
         style={{ cursor: "pointer" }}
       >
         <Flex align="center" gap="2">
-          <Text size="2" weight="medium">Bounty Board</Text>
+          <Text size="2" weight="medium">Headhunting Bounties</Text>
           {bounties.length > 0 && <Badge size="1" color="red">{bounties.length}</Badge>}
         </Flex>
         <Text size="1" color="gray">{open ? "▲" : "▼"}</Text>
@@ -1783,6 +1788,404 @@ function EmbeddedBountyCreateForm({ onCreated }: { onCreated: () => void }) {
       {error && <Text size="1" color="red">{error}</Text>}
     </Flex>
   );
+}
+
+// ─── Intel Bounty Board (embedded) ──────────────────────────────────
+
+function EmbeddedIntelBountyBoard() {
+  const [open, setOpen] = useState(false);
+  const [bounties, setBounties] = useState<IntelBounty[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [accepting, setAccepting] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+  const [teaserInput, setTeaserInput] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+  const account = useCurrentAccount();
+  const dAppKit = useDAppKit();
+
+  const loadBounties = async () => {
+    setLoading(true);
+    invalidateIntelBountyCache();
+    const all = await fetchIntelBounties();
+    setBounties(all.filter((b) => b.status === 0 || b.status === 1));
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    loadBounties();
+  }, [open]);
+
+  const selected = bounties.find((b) => b.objectId === selectedId);
+  const isPoster = selected && account?.address === selected.poster;
+  const isHunter = selected && account?.address === selected.hunter;
+
+  const handleSubmit = async (bounty: IntelBounty) => {
+    if (!account?.address || !teaserInput.trim()) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      // Teaser-only submission: generate a throwaway key so the hash check passes.
+      // The intel is in the teaser; encrypted payload is empty.
+      const key = await generateKey();
+      const kHash = await hashKey(key);
+      const tx = buildSubmitFulfillmentTx(
+        bounty.objectId,
+        teaserInput.trim(),
+        new Uint8Array(0),
+        key,
+        kHash,
+      );
+      await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      setTeaserInput("");
+      invalidateIntelBountyCache();
+      await new Promise((r) => setTimeout(r, 3000));
+      await loadBounties();
+    } catch (e: any) {
+      setError(e?.message || "Submission failed");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleAccept = async (bounty: IntelBounty) => {
+    setAccepting(true);
+    setError(null);
+    try {
+      const tx = buildAcceptFulfillmentTx(bounty.objectId);
+      await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      invalidateIntelBountyCache();
+      await new Promise((r) => setTimeout(r, 3000));
+      await loadBounties();
+      setSelectedId(null);
+    } catch (e: any) {
+      setError(e?.message || "Accept failed");
+    } finally {
+      setAccepting(false);
+    }
+  };
+
+  const handleReject = async (bounty: IntelBounty) => {
+    setRejecting(true);
+    setError(null);
+    try {
+      const tx = buildRejectFulfillmentTx(bounty.objectId);
+      await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      invalidateIntelBountyCache();
+      await new Promise((r) => setTimeout(r, 3000));
+      await loadBounties();
+    } catch (e: any) {
+      setError(e?.message || "Reject failed");
+    } finally {
+      setRejecting(false);
+    }
+  };
+
+  const catColor = (cat: number) =>
+    (["gray", "blue", "orange", "red", "purple"] as const)[cat] ?? "gray";
+
+  const openCount = bounties.filter((b) => b.status === 0).length;
+
+  return (
+    <Flex direction="column" gap="2">
+      <Flex
+        justify="between"
+        align="center"
+        onClick={() => setOpen(!open)}
+        style={{ cursor: "pointer" }}
+      >
+        <Flex align="center" gap="2">
+          <Text size="2" weight="medium">Intel Bounties</Text>
+          {openCount > 0 && <Badge size="1" color="purple">{openCount}</Badge>}
+        </Flex>
+        <Text size="1" color="gray">{open ? "▲" : "▼"}</Text>
+      </Flex>
+
+      {open && (
+        <Flex direction="column" gap="2" pl="2">
+          {loading ? (
+            <Text size="1" color="gray">Loading from chain...</Text>
+          ) : bounties.length === 0 ? (
+            <Flex direction="column" gap="1">
+              <Text size="1" color="gray">No open intel requests on-chain.</Text>
+              <Flex gap="2">
+                <Button size="1" variant="ghost" onClick={loadBounties}>Refresh</Button>
+                {account && (
+                  <Button size="1" variant="soft" color="purple" onClick={() => setShowCreate(!showCreate)}>
+                    {showCreate ? "Cancel" : "+ Request Intel"}
+                  </Button>
+                )}
+              </Flex>
+              {showCreate && <EmbeddedIntelBountyCreateForm onCreated={loadBounties} />}
+            </Flex>
+          ) : !selected ? (
+            <Flex direction="column" gap="1">
+              {bounties.map((b) => (
+                <Flex
+                  key={b.objectId}
+                  direction="column"
+                  gap="1"
+                  p="2"
+                  onClick={() => setSelectedId(b.objectId)}
+                  style={{
+                    cursor: "pointer",
+                    borderRadius: 4,
+                    border: "1px solid var(--color-border)",
+                  }}
+                >
+                  <Flex justify="between" align="center">
+                    <Text size="1" weight="bold" truncate style={{ maxWidth: 140 }}>
+                      {b.title || "(untitled)"}
+                    </Text>
+                    <Flex gap="1">
+                      <Badge size="1" color={catColor(b.category)}>
+                        {BOUNTY_CATEGORY_LABELS[b.category as BountyCategory] ?? "General"}
+                      </Badge>
+                      <Badge size="1" color={b.status === 0 ? "green" : "orange"}>
+                        {b.statusLabel}
+                      </Badge>
+                    </Flex>
+                  </Flex>
+                  <Flex justify="between">
+                    <Text size="1" color="gray">
+                      {b.targetSystem || b.targetTribe || "Any location"}
+                    </Text>
+                    <Text size="1" color="blue">{b.rewardSui.toFixed(b.rewardSui < 1 ? 4 : 2)} SUI</Text>
+                  </Flex>
+                </Flex>
+              ))}
+              <Flex gap="2">
+                <Button size="1" variant="ghost" onClick={loadBounties}>Refresh</Button>
+                {account && (
+                  <Button size="1" variant="soft" color="purple" onClick={() => setShowCreate(!showCreate)}>
+                    {showCreate ? "Cancel" : "+ Request Intel"}
+                  </Button>
+                )}
+              </Flex>
+              {showCreate && <EmbeddedIntelBountyCreateForm onCreated={loadBounties} />}
+            </Flex>
+          ) : (
+            <Flex direction="column" gap="2">
+              <Flex align="center" gap="1" onClick={() => setSelectedId(null)} style={{ cursor: "pointer" }}>
+                <Text size="1" color="blue">← Back</Text>
+              </Flex>
+
+              <Text size="2" weight="bold">{selected.title}</Text>
+              <Flex gap="1" wrap="wrap">
+                <Badge size="1" color={catColor(selected.category)}>
+                  {BOUNTY_CATEGORY_LABELS[selected.category as BountyCategory] ?? "General"}
+                </Badge>
+                <Badge size="1" color={selected.status === 0 ? "green" : "orange"}>
+                  {selected.statusLabel}
+                </Badge>
+              </Flex>
+
+              {selected.description && (
+                <Text size="1" color="gray" style={{ whiteSpace: "pre-wrap" }}>{selected.description}</Text>
+              )}
+
+              <Flex gap="3" wrap="wrap">
+                <Flex direction="column" gap="0">
+                  <Text size="1" color="gray">Reward</Text>
+                  <Text size="1" weight="bold" color="blue">
+                    {selected.rewardSui.toFixed(selected.rewardSui < 1 ? 4 : 2)} SUI
+                  </Text>
+                </Flex>
+                {selected.targetSystem && (
+                  <Flex direction="column" gap="0">
+                    <Text size="1" color="gray">System</Text>
+                    <Text size="1">{selected.targetSystem}</Text>
+                  </Flex>
+                )}
+                {selected.targetTribe && (
+                  <Flex direction="column" gap="0">
+                    <Text size="1" color="gray">Tribe</Text>
+                    <Text size="1">{selected.targetTribe}</Text>
+                  </Flex>
+                )}
+              </Flex>
+
+              <Flex direction="column" gap="0">
+                <Text size="1" color="gray">Posted by</Text>
+                <Text size="1" style={{ fontFamily: "monospace" }}>
+                  {selected.poster.slice(0, 10)}...{selected.poster.slice(-6)}
+                </Text>
+              </Flex>
+
+              {/* Pending: poster sees teaser and can accept/reject */}
+              {selected.status === 1 && isPoster && (
+                <Flex direction="column" gap="2" p="2" style={{
+                  border: "1px solid var(--orange-6)",
+                  borderRadius: 4,
+                }}>
+                  <Text size="1" weight="medium" color="orange">Intel Submitted</Text>
+                  <Flex direction="column" gap="0">
+                    <Text size="1" color="gray">Hunter</Text>
+                    <Text size="1" style={{ fontFamily: "monospace" }}>
+                      {selected.hunter.slice(0, 10)}...{selected.hunter.slice(-6)}
+                    </Text>
+                  </Flex>
+                  {selected.teaser && (
+                    <Flex direction="column" gap="0">
+                      <Text size="1" color="gray">Intel Preview</Text>
+                      <Text size="1" style={{ whiteSpace: "pre-wrap" }}>{selected.teaser}</Text>
+                    </Flex>
+                  )}
+                  <Flex gap="2">
+                    <Button size="1" variant="solid" color="green"
+                      onClick={() => handleAccept(selected)} disabled={accepting || rejecting}>
+                      {accepting ? "Accepting..." : "Accept & Pay"}
+                    </Button>
+                    <Button size="1" variant="soft" color="red"
+                      onClick={() => handleReject(selected)} disabled={accepting || rejecting}>
+                      {rejecting ? "Rejecting..." : "Reject"}
+                    </Button>
+                  </Flex>
+                </Flex>
+              )}
+
+              {/* Pending: hunter sees their submitted teaser */}
+              {selected.status === 1 && isHunter && (
+                <Flex direction="column" gap="1" p="2" style={{
+                  border: "1px solid var(--blue-6)",
+                  borderRadius: 4,
+                }}>
+                  <Text size="1" weight="medium" color="blue">Your Submission — Awaiting Review</Text>
+                  {selected.teaser && (
+                    <Text size="1" color="gray" style={{ whiteSpace: "pre-wrap" }}>{selected.teaser}</Text>
+                  )}
+                </Flex>
+              )}
+
+              {/* Open: hunter can submit intel */}
+              {selected.status === 0 && account && !isPoster && (
+                <Flex direction="column" gap="2">
+                  <Text size="1" weight="medium">Submit Intel</Text>
+                  <Text size="1" color="gray">
+                    Your intel preview — the poster will evaluate this before releasing payment.
+                  </Text>
+                  <TextField.Root
+                    size="1"
+                    placeholder="Describe the intel you have..."
+                    value={teaserInput}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTeaserInput(e.target.value)}
+                  />
+                  <Button
+                    size="1"
+                    variant="solid"
+                    color="purple"
+                    onClick={() => handleSubmit(selected)}
+                    disabled={submitting || !teaserInput.trim()}
+                  >
+                    {submitting ? "Submitting..." : "Submit Intel"}
+                  </Button>
+                  <Text size="1" color="gray">
+                    For encrypted full-package delivery, use the full Frontier Ops app.
+                  </Text>
+                </Flex>
+              )}
+
+              {selected.status === 0 && !account && (
+                <Text size="1" color="orange">Connect wallet to submit intel</Text>
+              )}
+
+              {error && <Text size="1" color="red">{error}</Text>}
+            </Flex>
+          )}
+        </Flex>
+      )}
+    </Flex>
+  );
+}
+
+function EmbeddedIntelBountyCreateForm({ onCreated }: { onCreated: () => void }) {
+  const account = useCurrentAccount();
+  const dAppKit = useDAppKit();
+  const [title, setTitle] = useState("");
+  const [desc, setDesc] = useState("");
+  const [category, setCategory] = useState<BountyCategory>(0);
+  const [targetSystem, setTargetSystem] = useState("");
+  const [targetTribe, setTargetTribe] = useState("");
+  const [reward, setReward] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleCreate = async () => {
+    if (!account?.address || !title.trim() || !reward.trim()) return;
+    const sui = parseFloat(reward);
+    if (isNaN(sui) || sui <= 0) { setError("Invalid reward amount"); return; }
+    setCreating(true);
+    setError(null);
+    try {
+      const mist = BigInt(Math.round(sui * 1_000_000_000));
+      // Expires in 7 days
+      const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
+      const tx = buildCreateIntelBountyTx(
+        title.trim(), desc.trim(), category,
+        targetSystem.trim(), targetTribe.trim(),
+        mist, expiresAt,
+      );
+      await dAppKit.signAndExecuteTransaction({ transaction: tx });
+      invalidateIntelBountyCache();
+      setTitle(""); setDesc(""); setTargetSystem(""); setTargetTribe(""); setReward("");
+      onCreated();
+    } catch (e: any) {
+      setError(e?.message || "Failed to post intel request");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <Flex direction="column" gap="2" p="2" style={{ border: "1px solid var(--purple-6)", borderRadius: 4 }}>
+      <Text size="1" weight="medium" color="purple">Request Intel</Text>
+
+      <TextField.Root size="1" placeholder="Title (e.g. Gate 42 access routes)"
+        value={title} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTitle(e.target.value)} />
+
+      <TextField.Root size="1" placeholder="Description / what you need"
+        value={desc} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDesc(e.target.value)} />
+
+      <Flex gap="1" wrap="wrap">
+        {([0, 1, 2, 3, 4] as BountyCategory[]).map((cat) => (
+          <Badge
+            key={cat}
+            size="1"
+            color={category === cat ? catColorFor(cat) : "gray"}
+            style={{ cursor: "pointer" }}
+            onClick={() => setCategory(cat)}
+          >
+            {BOUNTY_CATEGORY_LABELS[cat]}
+          </Badge>
+        ))}
+      </Flex>
+
+      <TextField.Root size="1" placeholder="Target system (optional)"
+        value={targetSystem} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTargetSystem(e.target.value)} />
+
+      <TextField.Root size="1" placeholder="Target tribe (optional)"
+        value={targetTribe} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTargetTribe(e.target.value)} />
+
+      <Flex gap="2" align="center">
+        <TextField.Root size="1" placeholder="Reward (SUI)" value={reward}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setReward(e.target.value)}
+          style={{ width: 100 }} />
+        <Button size="1" variant="solid" color="purple" onClick={handleCreate}
+          disabled={creating || !title.trim() || !reward.trim()}>
+          {creating ? "Posting..." : "Post"}
+        </Button>
+      </Flex>
+      <Text size="1" color="gray">SUI escrowed on-chain, released when you accept a submission.</Text>
+      {error && <Text size="1" color="red">{error}</Text>}
+    </Flex>
+  );
+}
+
+function catColorFor(cat: number) {
+  return (["gray", "blue", "orange", "red", "purple"] as const)[cat] ?? "gray";
 }
 
 export function AuthorizeExtensionButton({
