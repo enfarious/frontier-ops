@@ -39,7 +39,7 @@ export function analyzeTribeProfiles(
     structureKills: number;
     members: Set<string>;
     memberNames: Map<string, string>;
-    systemCounts: Map<string, { name: string; count: number }>;
+    systemCounts: Map<string, { systemId: string; systemName: string; count: number }>;
     enemies: Map<string, { killsAgainst: number; deathsTo: number }>;
     timestamps: number[];
   }>();
@@ -68,7 +68,7 @@ export function analyzeTribeProfiles(
       }
       const sys = t.systemCounts.get(km.solarSystemId);
       if (sys) sys.count++;
-      else t.systemCounts.set(km.solarSystemId, { name: km.solarSystemName ?? km.solarSystemId, count: 1 });
+      else t.systemCounts.set(km.solarSystemId, { systemId: km.solarSystemId, systemName: km.solarSystemName ?? km.solarSystemId, count: 1 });
       t.timestamps.push(km.killTimestamp);
 
       if (km.victimTribe && km.victimTribe !== km.killerTribe) {
@@ -258,7 +258,7 @@ function TribeDossier({ profile, open, onClose, onSelectPlayer }: DossierProps) 
               <Flex gap="1" wrap="wrap">
                 {profile.activeSystems.map((s) => (
                   <Badge key={s.systemId} variant="soft" color="blue" size="1">
-                    {s.name} ({s.count})
+                    {s.systemName} ({s.count})
                   </Badge>
                 ))}
               </Flex>
