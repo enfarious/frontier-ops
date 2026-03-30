@@ -1,5 +1,6 @@
 /**
  * PTB builders for the intel_marketplace Move contract.
+ * Supports encrypted Dead Drop payloads with sealed-key atomic reveal.
  */
 import { Transaction } from "@mysten/sui/transactions";
 
@@ -14,14 +15,19 @@ function target(fn: string): `${string}::${string}::${string}` {
 /** Visibility: 0=global, 1=tribe, 2=local */
 export type ListingVisibility = 0 | 1 | 2;
 
-/** Seller creates a new intel listing on-chain with embedded Dead Drop payload. */
+/**
+ * Seller creates a new encrypted intel listing on-chain.
+ * The encryption key is sealed in a dynamic field; only revealed on purchase.
+ */
 export function buildCreateListingTx(
   title: string,
   description: string,
   priceMist: bigint,
   visibility: ListingVisibility = 0,
-  sellerTribe = "",
-  payloadJson = "",
+  sellerTribe: string,
+  encryptedPayload: Uint8Array,
+  encryptionKey: Uint8Array,
+  keyHash: Uint8Array,
 ): Transaction {
   const tx = new Transaction();
   tx.moveCall({
@@ -32,14 +38,16 @@ export function buildCreateListingTx(
       tx.pure.u64(priceMist),
       tx.pure.u8(visibility),
       tx.pure.vector("u8", Array.from(new TextEncoder().encode(sellerTribe))),
-      tx.pure.vector("u8", Array.from(new TextEncoder().encode(payloadJson))),
+      tx.pure.vector("u8", Array.from(encryptedPayload)),
+      tx.pure.vector("u8", Array.from(encryptionKey)),
+      tx.pure.vector("u8", Array.from(keyHash)),
       tx.object(CLOCK),
     ],
   });
   return tx;
 }
 
-/** Buyer purchases a listing by paying SUI. */
+/** Buyer purchases a listing by paying SUI. Key is revealed atomically. */
 export function buildPurchaseListingTx(
   listingObjectId: string,
   priceMist: bigint,
@@ -57,7 +65,7 @@ export function buildPurchaseListingTx(
   return tx;
 }
 
-/** Seller cancels a listing (only while LISTED). */
+/** Seller cancels a listing (only while LISTED). Sealed key is destroyed. */
 export function buildCancelListingTx(listingObjectId: string): Transaction {
   const tx = new Transaction();
   tx.moveCall({

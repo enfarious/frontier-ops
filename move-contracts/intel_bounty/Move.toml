@@ -1,0 +1,6 @@
+[package]
+name = "intel_bounty"
+edition = "2024"
+
+[addresses]
+intel_bounty = "0x0"

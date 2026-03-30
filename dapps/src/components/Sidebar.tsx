@@ -9,7 +9,7 @@ import {
   type ModuleDefinition,
 } from "../core/module-registry";
 import { useOperatingContext } from "../core/OperatingContext";
-import { ChevronLeftIcon, ChevronRightIcon, DragHandleDots2Icon, GearIcon, Link2Icon } from "@radix-ui/react-icons";
+import { ChevronLeftIcon, ChevronRightIcon, DragHandleDots2Icon, GearIcon, Link2Icon, HeartIcon, GitHubLogoIcon } from "@radix-ui/react-icons";
 import type { TribeInfo } from "../core/types";
 
 interface SidebarProps {
@@ -35,6 +35,7 @@ export function Sidebar({ activeModuleId, onSelectModule, collapsed = false, onT
   );
   const [order, setOrder] = useState<string[]>(getModuleOrder);
   const [showSettings, setShowSettings] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
   const dragItem = useRef<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
 
@@ -216,6 +217,86 @@ export function Sidebar({ activeModuleId, onSelectModule, collapsed = false, onT
                 />
               </Flex>
             ))}
+          </Flex>
+        )}
+      </Box>
+
+      {/* About & Contribute */}
+      <Box
+        p="3"
+        style={{ borderTop: "1px solid var(--color-border)" }}
+      >
+        <Flex
+          align="center"
+          gap="2"
+          style={{ cursor: "pointer" }}
+          onClick={() => setShowAbout(!showAbout)}
+        >
+          <HeartIcon style={{ opacity: 0.6 }} />
+          <Text size="1">About Frontier Ops</Text>
+        </Flex>
+
+        {showAbout && (
+          <Flex direction="column" gap="2" mt="3">
+            <Text size="1" color="gray" style={{ lineHeight: 1.5 }}>
+              Built by a solo player, for solo players. EVE Frontier is brutal
+              without good tools — so I built them.
+            </Text>
+            <Text size="1" color="gray" style={{ lineHeight: 1.5 }}>
+              I'm Mike — Navy vet, former social worker, snowboard instructor,
+              and self-taught dev. This project is how I learned to build
+              full-stack apps while playing a spaceship game at 2am.
+            </Text>
+            <Text size="1" color="gray" style={{ lineHeight: 1.5 }}>
+              Frontier Ops is free and open source. Fork it, self-host it, set your own
+              treasury wallet. It's yours.
+            </Text>
+
+            <Flex direction="column" gap="1" mt="1">
+              <a
+                href="https://ko-fi.com/enfarious"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ textDecoration: "none" }}
+              >
+                <Flex
+                  align="center"
+                  gap="2"
+                  p="2"
+                  style={{
+                    borderRadius: 6,
+                    background: "rgba(255,94,94,0.12)",
+                    border: "1px solid rgba(255,94,94,0.25)",
+                    cursor: "pointer",
+                  }}
+                >
+                  <HeartIcon style={{ color: "#ff5e5e" }} />
+                  <Text size="1" style={{ color: "#ff8080" }}>Support the project</Text>
+                </Flex>
+              </a>
+
+              <a
+                href="https://github.com/enfarious/frontier-ops"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ textDecoration: "none" }}
+              >
+                <Flex
+                  align="center"
+                  gap="2"
+                  p="2"
+                  style={{
+                    borderRadius: 6,
+                    background: "rgba(255,255,255,0.04)",
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    cursor: "pointer",
+                  }}
+                >
+                  <GitHubLogoIcon style={{ opacity: 0.7 }} />
+                  <Text size="1" color="gray">View on GitHub</Text>
+                </Flex>
+              </a>
+            </Flex>
           </Flex>
         )}
       </Box>

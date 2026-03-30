@@ -15,8 +15,9 @@ import { buildSubmitClaimTx, buildCreateBountyTx } from "../core/bounty-escrow-a
 import { searchCharactersByName, type CharacterSearchResult } from "../core/character-search";
 import { getItemTypeMap, type ItemType } from "../core/world-api";
 import { fetchSSUInventory } from "../core/inventory-data";
-import { fetchOnChainListings, invalidateListingCache, type OnChainListing } from "../core/intel-market-queries";
+import { fetchOnChainListings, invalidateListingCache, fetchKeyRevealedEvent, type OnChainListing } from "../core/intel-market-queries";
 import { buildPurchaseListingTx } from "../core/intel-market-actions";
+import { decrypt as aesDecrypt } from "../core/crypto";
 import { getCharacterMap } from "../modules/danger-alerts/hooks/useKillmails";
 
 
@@ -1876,6 +1877,8 @@ function EmbeddedIntelMarketplace() {
   const [error, setError] = useState<string | null>(null);
   const [sellerNames, setSellerNames] = useState<Map<string, string>>(new Map());
   const [revealedId, setRevealedId] = useState<string | null>(null);
+  const [decryptedPayloads, setDecryptedPayloads] = useState<Map<string, any>>(new Map());
+  const [decrypting, setDecrypting] = useState(false);
   const account = useCurrentAccount();
   const dAppKit = useDAppKit();
 
@@ -1951,11 +1954,26 @@ function EmbeddedIntelMarketplace() {
                 const isBuyer = account?.address === listing.buyer;
                 const isRevealed = revealedId === listing.objectId;
 
-                // Parse payload for inline display
-                let payloadData: any = null;
-                if (isRevealed && listing.payload) {
-                  try { payloadData = JSON.parse(listing.payload); } catch {}
-                }
+                // Get decrypted payload if revealed
+                const payloadData = isRevealed ? decryptedPayloads.get(listing.objectId) : null;
+
+                const handleReveal = async () => {
+                  if (!account?.address) return;
+                  setDecrypting(true);
+                  try {
+                    const keyBytes = await fetchKeyRevealedEvent(listing.objectId, account.address);
+                    if (keyBytes && listing.encryptedPayload.length > 0) {
+                      const plaintext = await aesDecrypt(listing.encryptedPayload, keyBytes);
+                      const parsed = JSON.parse(plaintext);
+                      setDecryptedPayloads((prev) => new Map(prev).set(listing.objectId, parsed));
+                      setRevealedId(listing.objectId);
+                    }
+                  } catch (e) {
+                    console.error("[IntelMarket] Decryption failed:", e);
+                  } finally {
+                    setDecrypting(false);
+                  }
+                };
 
                 return (
                   <Flex key={listing.objectId} direction="column" gap="1" p="2" style={{
@@ -1998,16 +2016,17 @@ function EmbeddedIntelMarketplace() {
                       </Button>
                     )}
 
-                    {/* Reveal Dead Drop inline for buyer */}
-                    {isSold && isBuyer && listing.payload && !isRevealed && (
+                    {/* Decrypt & Reveal Dead Drop inline for buyer */}
+                    {isSold && isBuyer && listing.encryptedPayload.length > 0 && !isRevealed && (
                       <Button
                         size="1"
                         variant="solid"
                         color="green"
-                        onClick={() => setRevealedId(listing.objectId)}
+                        disabled={decrypting}
+                        onClick={handleReveal}
                         style={{ alignSelf: "flex-start", marginTop: 4 }}
                       >
-                        Reveal Dead Drop
+                        {decrypting ? "Decrypting..." : "Decrypt Dead Drop"}
                       </Button>
                     )}
 
@@ -2062,7 +2081,7 @@ function EmbeddedIntelMarketplace() {
                       </Flex>
                     )}
 
-                    {isSold && isBuyer && !listing.payload && (
+                    {isSold && isBuyer && listing.encryptedPayload.length === 0 && (
                       <Text size="1" color="gray">No payload data on this listing</Text>
                     )}
 

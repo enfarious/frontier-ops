@@ -78,6 +78,7 @@ export interface IntelPackage {
   createdAt: number;
   listedAt?: number;
   onChainId?: string;
+  encryptionKey?: string; // base64-encoded AES-256 key (seller-side only)
 }
 
 // ─── Dead Drop Export ────────────────────────────────────────────────
@@ -89,6 +90,8 @@ export interface DeadDropPayload {
   description: string;
   askingPrice: string;
   exportedAt: string; // ISO 8601
+  encrypted?: boolean;       // true when payload is AES-256-GCM encrypted
+  keyHash?: string;          // base64 SHA-256 of encryption key (for verification)
   contents: {
     sightings: AssetSighting[];
     fieldReports: FieldReport[];

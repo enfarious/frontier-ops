@@ -10,6 +10,7 @@ import {
   TextField,
 } from "@radix-ui/themes";
 import type { Contact, ContactStanding } from "./contacts-types";
+import { ReputationSection } from "./components/ReputationSection";
 
 interface ContactDetailProps {
   contact: Contact;
@@ -79,6 +80,11 @@ export function ContactDetail({ contact, onUpdate, onRemove }: ContactDetailProp
         <Text size="1" color="gray">
           Added {new Date(contact.addedAt).toLocaleDateString()}
         </Text>
+
+        <ReputationSection
+          contactAddress={contact.id}
+          contactName={contact.name}
+        />
       </Flex>
     </Card>
   );
