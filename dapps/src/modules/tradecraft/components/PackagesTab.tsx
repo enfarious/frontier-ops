@@ -1,11 +1,15 @@
 import { useState } from "react";
 import { Badge, Button, Card, Dialog, Flex, Select, Text, TextArea, TextField } from "@radix-ui/themes";
-import { PlusIcon, TrashIcon, DownloadIcon, CopyIcon, CheckCircledIcon, UploadIcon } from "@radix-ui/react-icons";
+import { PlusIcon, TrashIcon, DownloadIcon, CopyIcon, CheckCircledIcon, UploadIcon, LockClosedIcon } from "@radix-ui/react-icons";
 import type { IntelPackage, PackageItem, PackageStatus, AssetSighting, WatchTarget, DeadDropPayload } from "../../../core/tradecraft-types";
 import type { FieldReport } from "../../../core/intel-types";
 import type { ListingVisibility } from "../../../core/intel-market-actions";
 import type { DeadDropPayload as DDPayload } from "../../../core/tradecraft-types";
-import { importDeadDrop } from "../hooks/useIntelPackages";
+import { importDeadDrop, importEncryptedDeadDrop } from "../hooks/useIntelPackages";
+import { keyFromBase64 } from "../../../core/crypto";
+import { RatingDialog } from "./RatingDialog";
+import { useRatings } from "../hooks/useRatings";
+import type { RatingContext } from "../../../core/rating-types";
 
 function statusColor(status: PackageStatus): "gray" | "blue" | "green" {
   switch (status) {
@@ -282,14 +286,19 @@ function ListOnChainButton({
     <Dialog.Root open={open} onOpenChange={setOpen}>
       <Dialog.Trigger>
         <Button size="1" variant="solid" color="purple" disabled={isPending}>
-          {isPending ? "Signing..." : "Sell on Chain"}
+          <LockClosedIcon />
+          {isPending ? "Sealing..." : "Seal & Sell"}
         </Button>
       </Dialog.Trigger>
       <Dialog.Content style={{ maxWidth: 360 }}>
-        <Dialog.Title>Sell on Chain</Dialog.Title>
+        <Dialog.Title>Seal & Sell on Chain</Dialog.Title>
         <Flex direction="column" gap="3" mt="2">
           <Text size="2">
             <strong>{pkg.title}</strong> for {pkg.askingPrice} SUI
+          </Text>
+          <Text size="1" color="gray">
+            Payload will be encrypted with AES-256-GCM. The decryption key is
+            sealed in a dynamic field and only revealed when a buyer pays.
           </Text>
           <Flex direction="column" gap="1">
             <Text size="1" color="gray" weight="bold">Visibility</Text>
@@ -312,7 +321,134 @@ function ListOnChainButton({
             disabled={isPending}
             onClick={() => { setOpen(false); onList(pkg, visibility); }}
           >
-            {isPending ? "Signing..." : "Publish"}
+            <LockClosedIcon />
+            {isPending ? "Sealing..." : "Seal & Publish"}
+          </Button>
+        </Flex>
+      </Dialog.Content>
+    </Dialog.Root>
+  );
+}
+
+function ImportDeadDropDialog({ onImportStatus }: { onImportStatus: (msg: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState<"auto" | "encrypted">("auto");
+  const [keyInput, setKeyInput] = useState("");
+  const [fileData, setFileData] = useState<{ name: string; bytes: Uint8Array } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  function reset() {
+    setMode("auto");
+    setKeyInput("");
+    setFileData(null);
+    setError(null);
+  }
+
+  function handleFileSelect() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".json,.bin";
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      setFileData({ name: file.name, bytes });
+      setError(null);
+
+      // Auto-detect: try parsing as JSON
+      try {
+        const text = new TextDecoder().decode(bytes);
+        JSON.parse(text);
+        setMode("auto"); // valid JSON = plaintext
+      } catch {
+        setMode("encrypted"); // not JSON = likely encrypted
+      }
+    };
+    input.click();
+  }
+
+  async function handleImport() {
+    if (!fileData) return;
+    setError(null);
+
+    try {
+      if (mode === "encrypted") {
+        if (!keyInput.trim()) {
+          setError("Decryption key required for encrypted Dead Drops");
+          return;
+        }
+        const keyBytes = keyFromBase64(keyInput.trim());
+        const result = await importEncryptedDeadDrop(fileData.bytes, keyBytes);
+        const parts = [];
+        if (result.sightings) parts.push(`${result.sightings} sightings`);
+        if (result.reports) parts.push(`${result.reports} reports`);
+        if (result.watchTargets) parts.push(`${result.watchTargets} targets`);
+        onImportStatus(`Decrypted & imported ${parts.join(", ")}`);
+      } else {
+        const text = new TextDecoder().decode(fileData.bytes);
+        const payload: DDPayload = JSON.parse(text);
+        if (payload.version !== 1 || !payload.contents) {
+          setError("Invalid Dead Drop format");
+          return;
+        }
+        const result = await importDeadDrop(payload);
+        const parts = [];
+        if (result.sightings) parts.push(`${result.sightings} sightings`);
+        if (result.reports) parts.push(`${result.reports} reports`);
+        if (result.watchTargets) parts.push(`${result.watchTargets} targets`);
+        onImportStatus(`Imported ${parts.join(", ")}`);
+      }
+      reset();
+      setOpen(false);
+    } catch (e: any) {
+      setError(e?.message || "Import failed");
+    }
+  }
+
+  return (
+    <Dialog.Root open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
+      <Dialog.Trigger>
+        <Button size="1" variant="ghost">
+          <UploadIcon /> Import Dead Drop
+        </Button>
+      </Dialog.Trigger>
+      <Dialog.Content style={{ maxWidth: 420 }}>
+        <Dialog.Title>Import Dead Drop</Dialog.Title>
+
+        <Flex direction="column" gap="3" mt="2">
+          <Button size="2" variant="outline" onClick={handleFileSelect}>
+            {fileData ? fileData.name : "Select File (.json or encrypted)"}
+          </Button>
+
+          {fileData && mode === "encrypted" && (
+            <Flex direction="column" gap="1">
+              <Flex gap="2" align="center">
+                <LockClosedIcon />
+                <Text size="1" color="orange" weight="bold">Encrypted Dead Drop detected</Text>
+              </Flex>
+              <Text size="1" color="gray">Enter the base64 decryption key from the seller.</Text>
+              <TextField.Root
+                placeholder="Base64 decryption key..."
+                value={keyInput}
+                onChange={(e) => setKeyInput(e.target.value)}
+                style={{ fontFamily: "monospace", fontSize: 11 }}
+              />
+            </Flex>
+          )}
+
+          {fileData && mode === "auto" && (
+            <Text size="1" color="green">Plaintext Dead Drop — ready to import.</Text>
+          )}
+
+          {error && <Text size="1" color="red">{error}</Text>}
+        </Flex>
+
+        <Flex justify="end" gap="2" mt="4">
+          <Dialog.Close>
+            <Button variant="soft" color="gray">Cancel</Button>
+          </Dialog.Close>
+          <Button onClick={handleImport} disabled={!fileData}>
+            {mode === "encrypted" ? "Decrypt & Import" : "Import"}
           </Button>
         </Flex>
       </Dialog.Content>
@@ -339,6 +475,10 @@ export function PackagesTab({
   isPending,
 }: Props) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
+  const [importStatus, setImportStatus] = useState<string | null>(null);
+  const [rateTarget, setRateTarget] = useState<{ address: string; name: string; contextId: string; contextType: RatingContext } | null>(null);
+  const { addRating } = useRatings();
 
   async function handleExportCopy(pkgId: string) {
     const payload = await onExport(pkgId);
@@ -354,35 +494,16 @@ export function PackagesTab({
     onDownloadDeadDrop(payload);
   }
 
-  const [importStatus, setImportStatus] = useState<string | null>(null);
+  async function handleCopyKey(pkg: IntelPackage) {
+    if (!pkg.encryptionKey) return;
+    await navigator.clipboard.writeText(pkg.encryptionKey);
+    setCopiedKeyId(pkg.id);
+    setTimeout(() => setCopiedKeyId(null), 2000);
+  }
 
-  async function handleImportDeadDrop() {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = ".json";
-    input.onchange = async () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      try {
-        const text = await file.text();
-        const payload: DDPayload = JSON.parse(text);
-        if (payload.version !== 1 || !payload.contents) {
-          setImportStatus("Invalid Dead Drop format");
-          return;
-        }
-        const result = await importDeadDrop(payload);
-        const parts = [];
-        if (result.sightings) parts.push(`${result.sightings} sightings`);
-        if (result.reports) parts.push(`${result.reports} reports`);
-        if (result.watchTargets) parts.push(`${result.watchTargets} targets`);
-        setImportStatus(`Imported ${parts.join(", ")}`);
-        setTimeout(() => setImportStatus(null), 3000);
-      } catch {
-        setImportStatus("Failed to parse Dead Drop file");
-        setTimeout(() => setImportStatus(null), 3000);
-      }
-    };
-    input.click();
+  function handleImportStatus(msg: string) {
+    setImportStatus(msg);
+    setTimeout(() => setImportStatus(null), 3000);
   }
 
   return (
@@ -398,9 +519,7 @@ export function PackagesTab({
               Sync Chain
             </Button>
           )}
-          <Button size="1" variant="ghost" onClick={handleImportDeadDrop}>
-            <UploadIcon /> Import Dead Drop
-          </Button>
+          <ImportDeadDropDialog onImportStatus={handleImportStatus} />
           <NewPackageForm onSubmit={onAdd} />
         </Flex>
       </Flex>
@@ -416,6 +535,7 @@ export function PackagesTab({
           const sightingCount = pkg.contents.filter((c) => c.type === "sighting").length;
           const reportCount = pkg.contents.filter((c) => c.type === "field_report").length;
           const freshness = getPackageFreshness(pkg, sightings, fieldReports);
+          const isSealed = !!pkg.encryptionKey;
 
           return (
             <Card key={pkg.id}>
@@ -434,6 +554,11 @@ export function PackagesTab({
                       {freshness && (
                         <Badge size="1" variant={freshness === "stale" ? "solid" : "outline"} color={freshnessColor(freshness)}>
                           {freshness}
+                        </Badge>
+                      )}
+                      {isSealed && (
+                        <Badge size="1" variant="solid" color="purple">
+                          <LockClosedIcon width={10} height={10} /> Sealed
                         </Badge>
                       )}
                     </Flex>
@@ -517,7 +642,7 @@ export function PackagesTab({
                     onAddItem={onAddItem}
                   />
 
-                  {/* Sell on chain: first time listing */}
+                  {/* Seal & Sell on chain: first time listing */}
                   {!pkg.onChainId && pkg.contents.length > 0 && Number(pkg.askingPrice) > 0 && onListOnChain && (
                     <ListOnChainButton pkg={pkg} onList={onListOnChain} isPending={isPending} />
                   )}
@@ -552,6 +677,36 @@ export function PackagesTab({
                     </Button>
                   )}
 
+                  {/* Rate counterparty after sale */}
+                  {pkg.status === "sold" && pkg.onChainId && (
+                    <Button
+                      size="1"
+                      variant="ghost"
+                      color="yellow"
+                      onClick={() => setRateTarget({
+                        address: pkg.onChainId!,
+                        name: "Buyer",
+                        contextId: pkg.onChainId!,
+                        contextType: "package_sale",
+                      })}
+                    >
+                      Rate Buyer
+                    </Button>
+                  )}
+
+                  {/* Copy encryption key (for seller to share out-of-band) */}
+                  {isSealed && (
+                    <Button
+                      size="1"
+                      variant="ghost"
+                      color="purple"
+                      onClick={() => handleCopyKey(pkg)}
+                    >
+                      <LockClosedIcon />
+                      {copiedKeyId === pkg.id ? "Key Copied!" : "Copy Key"}
+                    </Button>
+                  )}
+
                   {pkg.contents.length > 0 && (
                     <>
                       <Button
@@ -577,6 +732,19 @@ export function PackagesTab({
           );
         })}
       </Flex>
+
+      {/* Rating Dialog */}
+      {rateTarget && (
+        <RatingDialog
+          open={!!rateTarget}
+          onOpenChange={(open) => { if (!open) setRateTarget(null); }}
+          subjectName={rateTarget.name}
+          subjectAddress={rateTarget.address}
+          contextType={rateTarget.contextType}
+          contextId={rateTarget.contextId}
+          onSubmit={addRating}
+        />
+      )}
     </Flex>
   );
 }

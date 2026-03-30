@@ -1,36 +1,39 @@
 /**
- * Query on-chain IntelListing objects and KeyRevealed events
- * from the intel_marketplace contract via GraphQL.
+ * Query on-chain IntelBounty objects and KeyRevealed events
+ * from the intel_bounty contract via GraphQL.
  */
 
 const GRAPHQL_ENDPOINT = import.meta.env.VITE_SUI_GRAPHQL_ENDPOINT || "https://graphql.testnet.sui.io/graphql";
-const INTEL_PKG = import.meta.env.VITE_INTEL_MARKET_PACKAGE_ID || "";
-const LISTING_TYPE = `${INTEL_PKG}::intel_marketplace::IntelListing`;
-const KEY_REVEALED_TYPE = `${INTEL_PKG}::intel_marketplace::KeyRevealed`;
+const BOUNTY_PKG = import.meta.env.VITE_INTEL_BOUNTY_PACKAGE_ID || "";
+const BOUNTY_TYPE = `${BOUNTY_PKG}::intel_bounty::IntelBounty`;
+const KEY_REVEALED_TYPE = `${BOUNTY_PKG}::intel_bounty::KeyRevealed`;
 
-export interface OnChainListing {
+export interface OnChainBounty {
   objectId: string;
-  seller: string;
-  buyer: string;
+  poster: string;
+  hunter: string;
   title: string;
   description: string;
-  priceMist: number;
-  priceSui: number;
+  category: number;
+  targetSystem: string;
+  targetTribe: string;
   rewardMist: number;
-  visibility: number; // 0=global, 1=tribe, 2=local
-  sellerTribe: string;
-  encryptedPayload: Uint8Array; // AES-256-GCM ciphertext (IV-prefixed)
-  keyHash: Uint8Array;          // SHA-256 of encryption key
+  rewardSui: number;
+  teaser: string;
+  encryptedPayload: Uint8Array;
+  keyHash: Uint8Array;
   status: number;
   statusLabel: string;
   createdAt: number;
-  purchasedAt: number;
+  expiresAt: number;
+  fulfilledAt: number;
 }
 
 const STATUS_LABELS: Record<number, string> = {
-  0: "Listed",
-  1: "Sold",
-  2: "Cancelled",
+  0: "Open",
+  1: "Pending",
+  2: "Completed",
+  3: "Cancelled",
 };
 
 function decodeVecU8ToString(val: unknown): string {
@@ -60,18 +63,18 @@ function decodeVecU8ToBytes(val: unknown): Uint8Array {
   return new Uint8Array(0);
 }
 
-let cache: { listings: OnChainListing[]; fetchedAt: number } | null = null;
+let cache: { bounties: OnChainBounty[]; fetchedAt: number } | null = null;
 const CACHE_TTL = 30_000;
 
-export async function fetchOnChainListings(): Promise<OnChainListing[]> {
-  if (!INTEL_PKG) return [];
+export async function fetchOnChainBounties(): Promise<OnChainBounty[]> {
+  if (!BOUNTY_PKG) return [];
 
   if (cache && Date.now() - cache.fetchedAt < CACHE_TTL) {
-    return cache.listings;
+    return cache.bounties;
   }
 
   const query = `{
-    objects(filter: { type: "${LISTING_TYPE}" }, first: 50) {
+    objects(filter: { type: "${BOUNTY_TYPE}" }, first: 50) {
       nodes {
         address
         asMoveObject {
@@ -92,53 +95,52 @@ export async function fetchOnChainListings(): Promise<OnChainListing[]> {
     const data = await res.json();
     const nodes = data?.data?.objects?.nodes ?? [];
 
-    const listings: OnChainListing[] = nodes.map((node: any) => {
+    const bounties: OnChainBounty[] = nodes.map((node: any) => {
       const json = node.asMoveObject?.contents?.json ?? {};
       const status = Number(json.status ?? 0);
-      const priceMist = Number(json.price_mist ?? 0);
-      const rewardMist = Number(json.reward ?? 0);
+      // Reward is a Balance, extract its value
+      const rewardMist = Number(json.reward?.value ?? json.reward ?? 0);
 
       return {
         objectId: node.address,
-        seller: json.seller ?? "",
-        buyer: json.buyer ?? "",
+        poster: json.poster ?? "",
+        hunter: json.hunter ?? "",
         title: decodeVecU8ToString(json.title),
         description: decodeVecU8ToString(json.description),
-        priceMist,
-        priceSui: priceMist / 1_000_000_000,
+        category: Number(json.category ?? 0),
+        targetSystem: decodeVecU8ToString(json.target_system),
+        targetTribe: decodeVecU8ToString(json.target_tribe),
         rewardMist,
-        visibility: Number(json.visibility ?? 0),
-        sellerTribe: decodeVecU8ToString(json.seller_tribe),
+        rewardSui: rewardMist / 1_000_000_000,
+        teaser: decodeVecU8ToString(json.teaser),
         encryptedPayload: decodeVecU8ToBytes(json.encrypted_payload),
         keyHash: decodeVecU8ToBytes(json.key_hash),
         status,
         statusLabel: STATUS_LABELS[status] ?? `Unknown(${status})`,
         createdAt: Number(json.created_at ?? 0),
-        purchasedAt: Number(json.purchased_at ?? 0),
+        expiresAt: Number(json.expires_at ?? 0),
+        fulfilledAt: Number(json.fulfilled_at ?? 0),
       };
     });
 
-    cache = { listings, fetchedAt: Date.now() };
-    return listings;
+    cache = { bounties, fetchedAt: Date.now() };
+    return bounties;
   } catch (err) {
-    console.error("[IntelMarket] Failed to fetch on-chain listings:", err);
-    return cache?.listings ?? [];
+    console.error("[IntelBounty] Failed to fetch on-chain bounties:", err);
+    return cache?.bounties ?? [];
   }
 }
 
-export function invalidateListingCache() {
+export function invalidateBountyCache() {
   cache = null;
 }
 
-/**
- * Fetch the encryption key from a KeyRevealed event after purchase.
- * The buyer's client calls this to get the decryption key.
- */
-export async function fetchKeyRevealedEvent(
-  listingId: string,
-  buyerAddress: string,
+/** Fetch the encryption key from a KeyRevealed event after acceptance. */
+export async function fetchBountyKeyRevealedEvent(
+  bountyId: string,
+  posterAddress: string,
 ): Promise<Uint8Array | null> {
-  if (!INTEL_PKG) return null;
+  if (!BOUNTY_PKG) return null;
 
   const query = `{
     events(
@@ -164,15 +166,14 @@ export async function fetchKeyRevealedEvent(
 
     for (const ev of events) {
       const json = ev.json ?? {};
-      // Match by listing ID and buyer
-      if (json.listing_id === listingId && json.buyer === buyerAddress) {
+      if (json.bounty_id === bountyId && json.poster === posterAddress) {
         return decodeVecU8ToBytes(json.encryption_key);
       }
     }
 
     return null;
   } catch (err) {
-    console.error("[IntelMarket] Failed to fetch KeyRevealed event:", err);
+    console.error("[IntelBounty] Failed to fetch KeyRevealed event:", err);
     return null;
   }
 }
