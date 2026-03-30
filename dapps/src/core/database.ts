@@ -175,6 +175,28 @@ const SCHEMA = `
     expires_at INTEGER,
     scope TEXT NOT NULL DEFAULT 'solo'
   );
+
+  CREATE TABLE IF NOT EXISTS ratings (
+    id TEXT PRIMARY KEY,
+    subject_address TEXT NOT NULL,
+    subject_name TEXT,
+    context_type TEXT NOT NULL,
+    context_id TEXT,
+    score INTEGER NOT NULL,
+    comment TEXT DEFAULT '',
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS chain_reputation_cache (
+    address TEXT PRIMARY KEY,
+    total_sales INTEGER DEFAULT 0,
+    total_purchases INTEGER DEFAULT 0,
+    total_bounties_posted INTEGER DEFAULT 0,
+    total_bounties_fulfilled INTEGER DEFAULT 0,
+    fulfillments_accepted INTEGER DEFAULT 0,
+    fulfillments_rejected INTEGER DEFAULT 0,
+    last_synced_at INTEGER NOT NULL
+  );
 `;
 
 // ─── IndexedDB persistence ──────────────────────────────────────────
@@ -231,6 +253,7 @@ async function initDatabase(): Promise<Database> {
   try { database.run("ALTER TABLE asset_sightings ADD COLUMN lpoint INTEGER"); } catch { /* column already exists */ }
   try { database.run("ALTER TABLE intel_packages ADD COLUMN on_chain_id TEXT"); } catch { /* column already exists */ }
   try { database.run("ALTER TABLE intel_packages ADD COLUMN encryption_key TEXT"); } catch { /* column already exists */ }
+  try { database.run("ALTER TABLE contacts ADD COLUMN wallet_address TEXT"); } catch { /* column already exists */ }
 
   return database;
 }

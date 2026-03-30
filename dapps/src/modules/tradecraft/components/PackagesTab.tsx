@@ -7,6 +7,9 @@ import type { ListingVisibility } from "../../../core/intel-market-actions";
 import type { DeadDropPayload as DDPayload } from "../../../core/tradecraft-types";
 import { importDeadDrop, importEncryptedDeadDrop } from "../hooks/useIntelPackages";
 import { keyFromBase64 } from "../../../core/crypto";
+import { RatingDialog } from "./RatingDialog";
+import { useRatings } from "../hooks/useRatings";
+import type { RatingContext } from "../../../core/rating-types";
 
 function statusColor(status: PackageStatus): "gray" | "blue" | "green" {
   switch (status) {
@@ -474,6 +477,8 @@ export function PackagesTab({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
   const [importStatus, setImportStatus] = useState<string | null>(null);
+  const [rateTarget, setRateTarget] = useState<{ address: string; name: string; contextId: string; contextType: RatingContext } | null>(null);
+  const { addRating } = useRatings();
 
   async function handleExportCopy(pkgId: string) {
     const payload = await onExport(pkgId);
@@ -672,6 +677,23 @@ export function PackagesTab({
                     </Button>
                   )}
 
+                  {/* Rate counterparty after sale */}
+                  {pkg.status === "sold" && pkg.onChainId && (
+                    <Button
+                      size="1"
+                      variant="ghost"
+                      color="yellow"
+                      onClick={() => setRateTarget({
+                        address: pkg.onChainId!,
+                        name: "Buyer",
+                        contextId: pkg.onChainId!,
+                        contextType: "package_sale",
+                      })}
+                    >
+                      Rate Buyer
+                    </Button>
+                  )}
+
                   {/* Copy encryption key (for seller to share out-of-band) */}
                   {isSealed && (
                     <Button
@@ -710,6 +732,19 @@ export function PackagesTab({
           );
         })}
       </Flex>
+
+      {/* Rating Dialog */}
+      {rateTarget && (
+        <RatingDialog
+          open={!!rateTarget}
+          onOpenChange={(open) => { if (!open) setRateTarget(null); }}
+          subjectName={rateTarget.name}
+          subjectAddress={rateTarget.address}
+          contextType={rateTarget.contextType}
+          contextId={rateTarget.contextId}
+          onSubmit={addRating}
+        />
+      )}
     </Flex>
   );
 }

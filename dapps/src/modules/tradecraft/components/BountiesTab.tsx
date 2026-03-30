@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Badge, Button, Card, Dialog, Flex, Select, SegmentedControl, Text, TextArea, TextField } from "@radix-ui/themes";
 import { PlusIcon, LockClosedIcon, CheckCircledIcon, Cross2Icon, ReloadIcon } from "@radix-ui/react-icons";
 import { useDAppKit, useCurrentAccount } from "@mysten/dapp-kit-react";
@@ -17,6 +17,9 @@ import { generateKey, encrypt, hashKey } from "../../../core/crypto";
 import { decrypt as aesDecrypt } from "../../../core/crypto";
 import type { DeadDropPayload } from "../../../core/tradecraft-types";
 import { importDeadDrop } from "../hooks/useIntelPackages";
+import { RatingDialog } from "./RatingDialog";
+import { useRatings } from "../hooks/useRatings";
+import type { RatingContext } from "../../../core/rating-types";
 
 function statusColor(status: number): "green" | "yellow" | "blue" | "gray" {
   switch (status) {
@@ -309,6 +312,8 @@ export function BountiesTab() {
   const [actionPending, setActionPending] = useState(false);
   const [decryptedPayloads, setDecryptedPayloads] = useState<Map<string, any>>(new Map());
   const [importStatus, setImportStatus] = useState<Map<string, string>>(new Map());
+  const [rateTarget, setRateTarget] = useState<{ address: string; name: string; contextId: string; contextType: RatingContext } | null>(null);
+  const { addRating } = useRatings();
   const account = useCurrentAccount();
   const dAppKit = useDAppKit();
 
@@ -319,6 +324,9 @@ export function BountiesTab() {
     setBounties(all);
     setLoading(false);
   }
+
+  // Auto-load on mount
+  useEffect(() => { loadBounties(); }, []);
 
   async function handleAccept(bounty: OnChainBounty) {
     setActionPending(true);
@@ -546,6 +554,40 @@ export function BountiesTab() {
                     </Button>
                   )}
 
+                  {/* Completed — poster rates hunter */}
+                  {bounty.status === 2 && isPoster && (
+                    <Button
+                      size="1"
+                      variant="ghost"
+                      color="yellow"
+                      onClick={() => setRateTarget({
+                        address: bounty.hunter,
+                        name: "Hunter",
+                        contextId: bounty.objectId,
+                        contextType: "bounty_fulfillment",
+                      })}
+                    >
+                      Rate Hunter
+                    </Button>
+                  )}
+
+                  {/* Completed — hunter rates poster */}
+                  {bounty.status === 2 && isHunter && (
+                    <Button
+                      size="1"
+                      variant="ghost"
+                      color="yellow"
+                      onClick={() => setRateTarget({
+                        address: bounty.poster,
+                        name: "Poster",
+                        contextId: bounty.objectId,
+                        contextType: "bounty_post",
+                      })}
+                    >
+                      Rate Poster
+                    </Button>
+                  )}
+
                   {/* Open — poster can cancel */}
                   {bounty.status === 0 && isPoster && (
                     <Button size="1" variant="ghost" color="red" disabled={actionPending} onClick={() => handleCancel(bounty)}>
@@ -558,6 +600,19 @@ export function BountiesTab() {
           );
         })}
       </Flex>
+
+      {/* Rating Dialog */}
+      {rateTarget && (
+        <RatingDialog
+          open={!!rateTarget}
+          onOpenChange={(open) => { if (!open) setRateTarget(null); }}
+          subjectName={rateTarget.name}
+          subjectAddress={rateTarget.address}
+          contextType={rateTarget.contextType}
+          contextId={rateTarget.contextId}
+          onSubmit={addRating}
+        />
+      )}
     </Flex>
   );
 }
