@@ -44,7 +44,10 @@ function toDateInputValue(ts: number): string {
 }
 
 function fromDateInputValue(val: string): number {
-  return new Date(val).getTime();
+  // Parse as local time, not UTC — "2026-03-11" should mean
+  // midnight in the user's timezone, not UTC midnight.
+  const [y, m, d] = val.split("-").map(Number);
+  return new Date(y, m - 1, d).getTime();
 }
 
 const btnStyle: React.CSSProperties = {
