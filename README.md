@@ -4,6 +4,20 @@
 
 🌐 **Live:** [enfarious.github.io/frontier-ops](https://enfarious.github.io/frontier-ops/)
 
+## Screenshots
+
+| Landing | Mission Control |
+|---|---|
+| ![Landing — 24,500 star gravity sim](images/landing.jpg) | ![Mission Control — AI agent with tool calls](images/mission-control.jpg) |
+
+| Intel | Turret Control |
+|---|---|
+| ![Intel — player threat tracking](images/intel.jpg) | ![Turret Control — assembly management](images/turret-control.jpg) |
+
+| Tradecraft | Bounty Board |
+|---|---|
+| ![Tradecraft — intel packages](images/tradecraft.jpg) | ![Bounty Board — on-chain escrow](images/bounty-board.jpg) |
+
 ## What It Does
 
 You're a solo operator running infrastructure in dangerous space. FrontierOps gives you:

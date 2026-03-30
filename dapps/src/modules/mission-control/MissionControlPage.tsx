@@ -721,6 +721,112 @@ function parseContent(raw: string): ContentSegment[] {
   return segments;
 }
 
+/**
+ * Lightweight markdown renderer — no external deps.
+ * Handles: ### headings, **bold**, `code`, - lists, ---, blank lines.
+ */
+function MarkdownText({ content }: { content: string }) {
+  const lines = content.split("\n");
+  const elements: React.ReactNode[] = [];
+  let listItems: string[] = [];
+  let key = 0;
+
+  const flushList = () => {
+    if (listItems.length === 0) return;
+    elements.push(
+      <ul key={key++} style={{ margin: "4px 0", paddingLeft: 18, lineHeight: 1.6 }}>
+        {listItems.map((item, i) => (
+          <li key={i} style={{ marginBottom: 2 }}><InlineMarkdown text={item} /></li>
+        ))}
+      </ul>
+    );
+    listItems = [];
+  };
+
+  for (const line of lines) {
+    // Horizontal rule
+    if (/^---+$/.test(line.trim())) {
+      flushList();
+      elements.push(<hr key={key++} style={{ border: "none", borderTop: "1px solid var(--gray-a5)", margin: "8px 0" }} />);
+      continue;
+    }
+    // Headings
+    const h3 = line.match(/^###\s+(.+)/);
+    if (h3) {
+      flushList();
+      elements.push(
+        <div key={key++} style={{ fontWeight: 700, fontSize: "0.85em", letterSpacing: "0.05em", color: "var(--accent-11)", marginTop: 8, marginBottom: 2, textTransform: "uppercase" }}>
+          <InlineMarkdown text={h3[1]} />
+        </div>
+      );
+      continue;
+    }
+    const h2 = line.match(/^##\s+(.+)/);
+    if (h2) {
+      flushList();
+      elements.push(
+        <div key={key++} style={{ fontWeight: 700, fontSize: "0.95em", color: "var(--accent-11)", marginTop: 10, marginBottom: 2 }}>
+          <InlineMarkdown text={h2[1]} />
+        </div>
+      );
+      continue;
+    }
+    // List items
+    const li = line.match(/^[-*]\s+(.+)/);
+    if (li) {
+      listItems.push(li[1]);
+      continue;
+    }
+    // Numbered list
+    const numLi = line.match(/^\d+\.\s+(.+)/);
+    if (numLi) {
+      listItems.push(numLi[1]);
+      continue;
+    }
+    // Flush any pending list before a non-list line
+    flushList();
+    // Empty line
+    if (line.trim() === "") {
+      elements.push(<div key={key++} style={{ height: 6 }} />);
+      continue;
+    }
+    // Normal paragraph line
+    elements.push(
+      <div key={key++} style={{ lineHeight: 1.6 }}>
+        <InlineMarkdown text={line} />
+      </div>
+    );
+  }
+  flushList();
+  return <>{elements}</>;
+}
+
+/** Renders inline markdown: **bold**, `code`, and plain text */
+function InlineMarkdown({ text }: { text: string }) {
+  const parts: React.ReactNode[] = [];
+  // Split on **bold** and `code`
+  const regex = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+  let last = 0;
+  let match;
+  let i = 0;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > last) parts.push(<span key={i++}>{text.slice(last, match.index)}</span>);
+    const chunk = match[0];
+    if (chunk.startsWith("**")) {
+      parts.push(<strong key={i++}>{chunk.slice(2, -2)}</strong>);
+    } else {
+      parts.push(
+        <code key={i++} style={{ fontFamily: "monospace", fontSize: "0.88em", background: "var(--gray-a4)", padding: "1px 4px", borderRadius: 3 }}>
+          {chunk.slice(1, -1)}
+        </code>
+      );
+    }
+    last = match.index + chunk.length;
+  }
+  if (last < text.length) parts.push(<span key={i++}>{text.slice(last)}</span>);
+  return <>{parts}</>;
+}
+
 /** Collapsible thinking block */
 function ThinkingBlock({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
   const [open, setOpen] = useState(false);
@@ -915,8 +1021,8 @@ function MessageBubble({
                 borderRadius: "12px 12px 12px 4px",
               }}
             >
-              <Text size="2" style={{ whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
-                {seg.content}
+              <Text size="2" as="div">
+                <MarkdownText content={seg.content} />
                 {message.pending && i === segments.length - 1 && (
                   <span style={{ opacity: 0.5, animation: "blink 1s infinite" }}> ...</span>
                 )}
