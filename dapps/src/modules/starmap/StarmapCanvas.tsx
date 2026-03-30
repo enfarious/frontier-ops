@@ -31,6 +31,7 @@ interface StarmapCanvasProps {
   heatmapCurrentTime?: number;
   heatmapWindowDuration?: number;
   heatmapEnabled?: boolean;
+  heatmapShowAll?: boolean;
   route?: RouteResult | null;
 }
 
@@ -480,13 +481,15 @@ function HeatmapLayer({
   positions,
   currentTime,
   windowDuration,
+  showAll,
 }: {
   killmails: KillmailData[];
   positions: Map<number, THREE.Vector3>;
   currentTime: number;
   windowDuration: number;
+  showAll?: boolean;
 }) {
-  const blobs = useHeatmapData(killmails, positions, currentTime, windowDuration);
+  const blobs = useHeatmapData(killmails, positions, currentTime, windowDuration, showAll);
   return <HeatmapBlobs blobs={blobs} />;
 }
 
@@ -711,6 +714,7 @@ export const StarmapCanvas = forwardRef<StarmapCanvasHandle, StarmapCanvasProps>
     heatmapCurrentTime,
     heatmapWindowDuration,
     heatmapEnabled = true,
+    heatmapShowAll = false,
     route,
   }, ref) {
     const positions = useMemo(() => normalizePositions(systems), [systems]);
@@ -766,6 +770,7 @@ export const StarmapCanvas = forwardRef<StarmapCanvasHandle, StarmapCanvasProps>
               positions={positions}
               currentTime={heatmapCurrentTime ?? Date.now()}
               windowDuration={heatmapWindowDuration ?? 24 * 3600_000}
+              showAll={heatmapShowAll}
             />
           )}
 

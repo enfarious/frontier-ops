@@ -82,24 +82,28 @@ export function recencyOpacity(ageMs: number): number {
 
 // ─── Blob Computation ────────────────────────────────────────────────
 
-/** Compute heatmap blob data from killmails within a time window. */
+/**
+ * Compute heatmap blob data from killmails within a time window.
+ *
+ * showAll mode: renders every kill in the window at full brightness,
+ * bypassing the age-based opacity/color decay that's only meaningful
+ * during timeline playback.
+ */
 export function computeHeatmapBlobs(
   killmails: KillmailData[],
   positions: Map<number, THREE.Vector3>,
   currentTime: number,
   windowDuration: number,
+  showAll = false,
 ): HeatmapBlobData[] {
   const windowStart = currentTime - Math.max(windowDuration, 60_000);
 
-  // Accumulate per system
   const systemStats = new Map<number, { volume: number; mostRecent: number }>();
 
   for (const km of killmails) {
     if (km.killTimestamp < windowStart || km.killTimestamp > currentTime) continue;
-
     const sysId = Number(km.solarSystemId);
     if (!sysId || !positions.has(sysId)) continue;
-
     const weight = getLossWeight(km.lossType);
     const existing = systemStats.get(sysId);
     if (existing) {
@@ -110,27 +114,42 @@ export function computeHeatmapBlobs(
     }
   }
 
-  // Convert to blob data
   const blobs: HeatmapBlobData[] = [];
 
   for (const [sysId, stats] of systemStats) {
     const pos = positions.get(sysId)!;
-    const age = currentTime - stats.mostRecent;
-    const opacity = recencyOpacity(age);
-
-    if (opacity <= 0) continue;
-
     const radius = Math.min(40, Math.max(2, 3 * Math.sqrt(stats.volume)));
 
-    blobs.push({
-      systemId: sysId,
-      position: pos,
-      violenceVolume: stats.volume,
-      radius,
-      mostRecentKill: stats.mostRecent,
-      color: recencyColor(age),
-      opacity,
-    });
+    if (showAll) {
+      // Full brightness — color by kill volume, not recency
+      const intensity = Math.min(1, stats.volume / 20);
+      blobs.push({
+        systemId: sysId,
+        position: pos,
+        violenceVolume: stats.volume,
+        radius,
+        mostRecentKill: stats.mostRecent,
+        color: new THREE.Color(
+          0.4 + intensity * 0.6,   // red channel scales with volume
+          0.1 + intensity * 0.1,
+          0.05,
+        ),
+        opacity: 0.3 + intensity * 0.5, // 0.3 minimum so even single kills show
+      });
+    } else {
+      const age = currentTime - stats.mostRecent;
+      const opacity = recencyOpacity(age);
+      if (opacity <= 0) continue;
+      blobs.push({
+        systemId: sysId,
+        position: pos,
+        violenceVolume: stats.volume,
+        radius,
+        mostRecentKill: stats.mostRecent,
+        color: recencyColor(age),
+        opacity,
+      });
+    }
   }
 
   return blobs;

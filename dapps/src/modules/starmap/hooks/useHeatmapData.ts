@@ -13,9 +13,10 @@ export function useHeatmapData(
   positions: Map<number, THREE.Vector3>,
   currentTime: number,
   windowDuration: number,
+  showAll = false,
 ): HeatmapBlobData[] {
   return useMemo(
-    () => computeHeatmapBlobs(killmails ?? [], positions, currentTime, windowDuration),
-    [killmails, positions, currentTime, windowDuration],
+    () => computeHeatmapBlobs(killmails ?? [], positions, currentTime, windowDuration, showAll),
+    [killmails, positions, currentTime, windowDuration, showAll],
   );
 }

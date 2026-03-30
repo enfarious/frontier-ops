@@ -34,50 +34,53 @@ export default function StarmapPage() {
   const [containerHeight, setContainerHeight] = useState(600);
 
   // Heatmap state
-  const [heatmapCurrentTime, setHeatmapCurrentTime] = useState(Date.now());
-  const [heatmapWindowDuration, setHeatmapWindowDuration] = useState(24 * 3600_000);
+  const DAY_MS = 86400_000;
+  const [rangeStart, setRangeStart] = useState(() => Date.now() - 7 * DAY_MS);
+  const [rangeEnd, setRangeEnd] = useState(() => Date.now());
+  const [heatmapCurrentTime, setHeatmapCurrentTime] = useState(() => Date.now() - 7 * DAY_MS);
+  const [killDuration, setKillDuration] = useState(24 * 3600_000);
   const [heatmapPlaying, setHeatmapPlaying] = useState(false);
   const [heatmapSpeed, setHeatmapSpeed] = useState(1);
   const [heatmapEnabled] = useState(true);
+  const [showAllPeriod, setShowAllPeriod] = useState<string | null>(null);
   const [showRoutePlanner, setShowRoutePlanner] = useState(false);
   const [activeRoute, setActiveRoute] = useState<RouteResult | null>(null);
 
-  // Time range from killmail data
-  const DAY_MS = 86400_000;
-  const timeRange = useMemo(() => {
+  // Data bounds from killmails
+  const dataRange = useMemo(() => {
     if (!killmails?.length) return { min: Date.now() - 7 * DAY_MS, max: Date.now() };
     const timestamps = killmails.map((k) => k.killTimestamp);
     return { min: Math.min(...timestamps), max: Date.now() };
   }, [killmails]);
 
+  // In Show All mode: window covers the full selected range, current time is rangeEnd
+  const heatmapWindowDuration = showAllPeriod ? (rangeEnd - rangeStart) : killDuration;
+  const effectiveCurrentTime = showAllPeriod ? rangeEnd : heatmapCurrentTime;
+
   // Playback animation loop
   const lastFrameRef = useRef(0);
   useEffect(() => {
-    if (!heatmapPlaying) return;
+    if (!heatmapPlaying || showAllPeriod !== null) return;
     lastFrameRef.current = performance.now();
 
     let rafId: number;
     function tick(now: number) {
-      const dt = (now - lastFrameRef.current) / 1000; // seconds
+      const dt = (now - lastFrameRef.current) / 1000;
       lastFrameRef.current = now;
-
-      // 1 real second = 1 game hour at 1x speed
       const advance = dt * heatmapSpeed * 3600_000;
-
       setHeatmapCurrentTime((prev) => {
         const next = prev + advance;
-        if (next >= Date.now()) {
+        if (next >= rangeEnd) {
           setHeatmapPlaying(false);
-          return Date.now();
+          return rangeEnd;
         }
         return next;
       });
-
       rafId = requestAnimationFrame(tick);
     }
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [heatmapPlaying, heatmapSpeed]);
+  }, [heatmapPlaying, heatmapSpeed, rangeEnd, showAllPeriod]);
 
   useEffect(() => {
     const el = mapContainerRef.current;
@@ -273,9 +276,10 @@ export default function StarmapPage() {
           onHoverSystem={setHoveredSystem}
           onReady={handleCanvasReady}
           killmails={killmails}
-          heatmapCurrentTime={heatmapCurrentTime}
+          heatmapCurrentTime={effectiveCurrentTime}
           heatmapWindowDuration={heatmapWindowDuration}
           heatmapEnabled={heatmapEnabled}
+          heatmapShowAll={showAllPeriod !== null}
           route={activeRoute}
         />
 
@@ -325,16 +329,22 @@ export default function StarmapPage() {
 
       {/* Heatmap time controls */}
       <TimeSlider
-        minTime={timeRange.min}
-        maxTime={timeRange.max}
+        rangeStart={rangeStart}
+        rangeEnd={rangeEnd}
+        onRangeStartChange={(t) => { setRangeStart(t); setHeatmapCurrentTime(t); }}
+        onRangeEndChange={(t) => { setRangeEnd(t); }}
         currentTime={heatmapCurrentTime}
         onCurrentTimeChange={setHeatmapCurrentTime}
-        windowDuration={heatmapWindowDuration}
-        onWindowDurationChange={setHeatmapWindowDuration}
+        killDuration={killDuration}
+        onKillDurationChange={setKillDuration}
         isPlaying={heatmapPlaying}
         onPlayPauseToggle={() => setHeatmapPlaying((p) => !p)}
         playbackSpeed={heatmapSpeed}
         onPlaybackSpeedChange={setHeatmapSpeed}
+        showAllPeriod={showAllPeriod}
+        onShowAllPeriodChange={(p) => { setShowAllPeriod(p); if (p) setHeatmapPlaying(false); }}
+        dataMin={dataRange.min}
+        dataMax={dataRange.max}
       />
     </Flex>
   );
